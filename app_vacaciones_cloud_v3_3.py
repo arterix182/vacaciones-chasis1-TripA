@@ -1,5 +1,4 @@
-# (archivo) app_vacaciones_cloud_v3_3.py
-# Vacaciones CH-1 (Cloud) v3.3 — Reportes mensuales por equipo + validación en servidor
+# Vacaciones CH-1 (Cloud) v3.3 — Reportes + validación en servidor
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -26,9 +25,11 @@ def load_empleados():
 @st.cache_data(ttl=5)
 def load_agenda_df():
     df = get_agenda_df()
-    if not df.empty:
-        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-        df = df.dropna(subset=["fecha"])
+    # 🔧 Normalizar fecha SIEMPRE
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["numero","nombre","equipo","fecha","tipo"])
+    df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+    df = df.dropna(subset=["fecha"])
     return df
 
 def clear_cache():
@@ -85,7 +86,8 @@ with tab1:
         tipo = st.selectbox("Tipo", ["Vacaciones", "Permiso", "Sanción"], key="tipo_cap")
         fecha = dt.date(int(anio), int(mes), int(dia))
 
-        personas_mismo_dia = agenda_df[agenda_df["fecha"].dt.date == fecha]
+        # Seguro contra .dt en DF vacío
+        personas_mismo_dia = agenda_df[agenda_df["fecha"].dt.date == fecha] if not agenda_df.empty else agenda_df.iloc[0:0]
         if len(personas_mismo_dia) >= 3:
             st.warning("Seleccione otro día, ya que el día que solicitas ya está llena la agenda")
         elif any(personas_mismo_dia["equipo"] == emp["equipo"]):
@@ -228,6 +230,7 @@ with tab3:
         st.info("Inicia sesión como admin para usar estas funciones.")
     else:
         sec = st.radio("Selecciona sección", ["Importar HISTÓRICO (Agenda)", "Importar EMPLEADOS", "Diagnóstico"], horizontal=True)
+
         if sec == "Importar EMPLEADOS":
             st.markdown("Sube **CSV/Excel** con columnas: `numero, nombre, equipo`.")
             upE = st.file_uploader("Archivo de empleados", type=["csv","xlsx"], key="emp_upload")
