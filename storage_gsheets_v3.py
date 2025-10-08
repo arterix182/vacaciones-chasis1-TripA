@@ -1,4 +1,4 @@
-# (archivo) storage_gsheets_v3.py — validación en servidor
+# Persistencia Google Sheets + validación en servidor (3 por día / no mismo equipo)
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
@@ -63,6 +63,7 @@ def _ws(name: str, expected_headers):
     _ensure_headers(ws, expected_headers)
     return ws
 
+# ---------- Empleados ----------
 def get_empleados_df() -> pd.DataFrame:
     ws = _ws("empleados", EMP_HEADERS)
     try:
@@ -89,12 +90,15 @@ def get_empleados_dict() -> dict:
         if not num:
             continue
         d[num] = {"nombre": r["nombre"], "equipo": r["equipo"]}
+        # alias sin ceros a la izquierda
         num_nz = num.lstrip("0")
         if num_nz and num_nz != num and num_nz not in d:
             d[num_nz] = {"nombre": r["nombre"], "equipo": r["equipo"]}
     return d
 
+# ---------- Agenda ----------
 def _agenda_df_fresh() -> pd.DataFrame:
+    """Lee la hoja agenda SIN caché y normaliza fecha."""
     ws = _ws("agenda", AGENDA_HEADERS)
     try:
         rows = ws.get_all_records()
@@ -104,8 +108,10 @@ def _agenda_df_fresh() -> pd.DataFrame:
         if not values or len(values) <= 1:
             return pd.DataFrame(columns=AGENDA_HEADERS)
         rows = [dict(zip(AGENDA_HEADERS, r + [""]*(len(AGENDA_HEADERS)-len(r)))) for r in values[1:]]
+
     if not rows:
         return pd.DataFrame(columns=AGENDA_HEADERS)
+
     df = pd.DataFrame(rows, columns=AGENDA_HEADERS)
     df["numero"] = df["numero"].astype(str).str.strip()
     df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
@@ -117,7 +123,14 @@ def get_agenda_df() -> pd.DataFrame:
     return _agenda_df_fresh()
 
 def append_agenda_row_safe(rec: dict):
+    """
+    Inserta SOLO si respeta reglas en estado actual del Sheet:
+      - Máx 3 personas por día
+      - No dos del mismo equipo el mismo día
+    """
     ws = _ws("agenda", AGENDA_HEADERS)
+
+    # Releer estado actual
     df = _agenda_df_fresh()
     try:
         fecha = pd.to_datetime(rec.get("fecha"), errors="coerce").date()
@@ -133,6 +146,7 @@ def append_agenda_row_safe(rec: dict):
     if any(mismos["equipo"] == equipo):
         raise ValueError("MISMO_EQUIPO")
 
+    # Grabar
     values = [[
         str(rec.get("numero","")).strip(),
         str(rec.get("nombre","")).strip(),
@@ -144,6 +158,7 @@ def append_agenda_row_safe(rec: dict):
     start_row = max(2, current_rows + 1)
     ws.update(f"A{start_row}", values)
 
+    # Revalidar (mitiga carrera extrema)
     df2 = _agenda_df_fresh()
     total = len(df2[df2["fecha"].dt.date == fecha])
     if total > 3:
