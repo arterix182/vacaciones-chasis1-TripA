@@ -121,17 +121,26 @@ def _agenda_df_fresh() -> pd.DataFrame:
 
 def get_agenda_df() -> pd.DataFrame:
     return _agenda_df_fresh()
-
 def append_agenda_row_safe(rec: dict):
     """
     Inserta SOLO si respeta reglas en estado actual del Sheet:
       - Máx 3 personas por día
       - No dos del mismo equipo el mismo día
     """
+    import pandas as pd
     ws = _ws("agenda", AGENDA_HEADERS)
 
-    # Releer estado actual
+    # Releer estado actual del Sheet (sin caché)
     df = _agenda_df_fresh()
+
+    # 🔧 Blindaje extra por si 'fecha' viene como texto o el DF está vacío
+    if df is None or df.empty or "fecha" not in df.columns:
+        df = pd.DataFrame(columns=AGENDA_HEADERS)
+    if not pd.api.types.is_datetime64_any_dtype(df.get("fecha", pd.Series([], dtype="datetime64[ns]"))):
+        df["fecha"] = pd.to_datetime(df.get("fecha"), errors="coerce")
+    df = df.dropna(subset=["fecha"])
+
+    # Normalizar inputs
     try:
         fecha = pd.to_datetime(rec.get("fecha"), errors="coerce").date()
     except Exception:
@@ -139,30 +148,43 @@ def append_agenda_row_safe(rec: dict):
     if pd.isna(fecha):
         raise ValueError("FORMATO_FECHA")
 
-    equipo = str(rec.get("equipo","")).strip()
-    mismos = df[df["fecha"].dt.date == fecha]
+    equipo = str(rec.get("equipo", "")).strip()
+
+    # ✅ Reglas (evitar .dt si quedó vacío)
+    if df.empty:
+        mismos = df.iloc[0:0]
+    else:
+        mismos = df[df["fecha"].dt.date == fecha]
+
     if len(mismos) >= 3:
         raise ValueError("LLENO")
-    if any(mismos["equipo"] == equipo):
+    if any(mismos["equipo"].astype(str).str.strip() == equipo):
         raise ValueError("MISMO_EQUIPO")
 
-    # Grabar
+    # Escribir
     values = [[
-        str(rec.get("numero","")).strip(),
-        str(rec.get("nombre","")).strip(),
+        str(rec.get("numero", "")).strip(),
+        str(rec.get("nombre", "")).strip(),
         equipo,
         fecha.isoformat(),
-        str(rec.get("tipo","")).strip()
+        str(rec.get("tipo", "")).strip()
     ]]
     current_rows = len(ws.get_all_values())
     start_row = max(2, current_rows + 1)
     ws.update(f"A{start_row}", values)
 
-    # Revalidar (mitiga carrera extrema)
+    # Revalidar por carrera extrema
     df2 = _agenda_df_fresh()
+    if df2 is None or df2.empty or "fecha" not in df2.columns:
+        return
+    if not pd.api.types.is_datetime64_any_dtype(df2["fecha"]):
+        df2["fecha"] = pd.to_datetime(df2["fecha"], errors="coerce")
+    df2 = df2.dropna(subset=["fecha"])
     total = len(df2[df2["fecha"].dt.date == fecha])
     if total > 3:
         raise ValueError("RACE_CONDITION")
+
+
 
 def replace_agenda_df(df: pd.DataFrame):
     ws = _ws("agenda", AGENDA_HEADERS)
