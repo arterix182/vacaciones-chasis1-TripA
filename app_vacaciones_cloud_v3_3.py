@@ -1,4 +1,4 @@
-# Vacaciones CH-1 (Cloud) v3.3 — Reportes + calendario con nombres + validación en servidor
+# Vacaciones CH-1 (Cloud) v3.3 — Reportes + calendario con nombres + validación en servidor by Arturo Ampudia
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
