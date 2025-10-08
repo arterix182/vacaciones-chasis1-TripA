@@ -160,18 +160,6 @@ with tab2:
         mask = (fechas_date >= f_ini_date) & (fechas_date <= f_fin_date)
         df_mes = df[mask].copy()
         df_mes["dia"] = df_mes["fecha"].dt.day
-        # Mapa: día -> lista de nombres (máx 3 para mostrar en la celda)
-nombres_por_dia = {}
-if not df_mes.empty:
-    tmp = df_mes.groupby("dia")["nombre"].apply(list).to_dict()
-    # muestra como: "Ana", "Luis", "María". Si hay más, agrega “…”
-    for d, lista in tmp.items():
-        top3 = lista[:3]
-        texto = "<br>".join(top3)
-        if len(lista) > 3:
-            texto += "<br>…"
-        nombres_por_dia[d] = texto
-
     else:
         df_mes = df.copy()
         df_mes["dia"] = []
@@ -221,18 +209,13 @@ if not df_mes.empty:
             dot = ""
             if equipo_sel != "Todos" and conteo_equipo.get(d, 0) > 0:
                 dot = "<div style='margin-top:6px;'><span style='display:inline-block;width:10px;height:10px;border-radius:50%;background:#00bcd4;'></span></div>"
-            nombres_html = nombres_por_dia.get(d, "")
-cell = f"""
-<td style='vertical-align:top; padding:8px; background:{color}; border:1px solid #ddd; border-radius:10px; text-align:center; height:120px;'>
-  <div style='font-weight:700;color:#1b1e23;font-size:16px'>{d}</div>
-  <div style='font-size:12px;color:#1b1e23'>{count} registro(s)</div>
-  {dot}
-  <div style='margin-top:6px; font-size:11px; line-height:1.25; color:#111'>
-    {nombres_html}
-  </div>
-</td>
-"""
-
+            cell = f"""
+            <td style='vertical-align:top; padding:8px; background:{color}; border:1px solid #ddd; border-radius:10px; text-align:center; height:90px;'>
+              <div style='font-weight:700;color:#1b1e23;font-size:16px'>{d}</div>
+              <div style='font-size:12px;color:#1b1e23'>{count} registro(s)</div>
+              {dot}
+            </td>
+            """
             html += cell
         html += "</tr>"
     html += "</table>"
