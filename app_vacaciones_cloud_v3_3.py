@@ -1,4 +1,4 @@
-# Vacaciones CH-1 (Cloud) v3.3 — Reportes + validación en servidor
+# Vacaciones CH-1 (Cloud) v3.3 — Reportes + calendario con nombres + validación en servidor
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -172,6 +172,17 @@ with tab2:
     conteo_total = df_mes.groupby("dia")["numero"].count().to_dict() if not df_mes.empty else {}
     conteo_equipo = df_eq.groupby("dia")["numero"].count().to_dict() if not df_eq.empty else {}
 
+    # --- NUEVO: nombres por día para mostrar en cada celda (máx 3, con “…” si hay más)
+    nombres_por_dia = {}
+    if not df_mes.empty:
+        tmp = df_mes.groupby("dia")["nombre"].apply(list).to_dict()
+        for d, lista in tmp.items():
+            top3 = lista[:3]
+            texto = "<br>".join(top3)
+            if len(lista) > 3:
+                texto += "<br>…"
+            nombres_por_dia[d] = texto
+
     def color_for(c):
         if not c or c == 0: return "#e9ecef"
         if c == 1: return "#2ecc71"
@@ -203,25 +214,68 @@ with tab2:
                 continue
             count = int(conteo_total.get(d, 0))
             if solo_llenos and count < 3:
-                html += "<td style='height:90px'></td>"
+                html += "<td style='height:120px'></td>"
                 continue
             color = color_for(count)
             dot = ""
             if equipo_sel != "Todos" and conteo_equipo.get(d, 0) > 0:
                 dot = "<div style='margin-top:6px;'><span style='display:inline-block;width:10px;height:10px;border-radius:50%;background:#00bcd4;'></span></div>"
+            nombres_html = nombres_por_dia.get(d, "")
             cell = f"""
-            <td style='vertical-align:top; padding:8px; background:{color}; border:1px solid #ddd; border-radius:10px; text-align:center; height:90px;'>
+            <td style='vertical-align:top; padding:8px; background:{color}; border:1px solid #ddd; border-radius:10px; text-align:center; height:120px;'>
               <div style='font-weight:700;color:#1b1e23;font-size:16px'>{d}</div>
               <div style='font-size:12px;color:#1b1e23'>{count} registro(s)</div>
               {dot}
+              <div style='margin-top:6px; font-size:11px; line-height:1.25; color:#111'>
+                {nombres_html}
+              </div>
             </td>
             """
             html += cell
         html += "</tr>"
     html += "</table>"
 
-    cal_height = 80 + (len(weeks) * 120)
+    cal_height = 80 + (len(weeks) * 140)
     components.html(html, height=cal_height, scrolling=True)
+
+    # --- NUEVO: detalle por día + descargas del mes
+    st.markdown("---")
+    c_det1, c_det2 = st.columns([1,3])
+    with c_det1:
+        dias_disponibles = sorted(df_mes["dia"].unique().tolist()) if not df_mes.empty else []
+        dia_det = st.selectbox("Ver detalle del día", dias_disponibles, index=0 if dias_disponibles else None)
+
+    with c_det2:
+        if dias_disponibles:
+            detalle = df_mes[df_mes["dia"] == dia_det].sort_values(["equipo","nombre"])
+            st.markdown(f"**Detalle {int(anioC)}-{int(mesC):02d}-{int(dia_det):02d}**")
+            st.dataframe(detalle[["numero","nombre","equipo","tipo"]], use_container_width=True)
+        else:
+            st.info("No hay registros para el mes seleccionado.")
+
+    if not df_mes.empty:
+        # Excel del detalle del mes
+        excel_mes = BytesIO()
+        with pd.ExcelWriter(excel_mes, engine="xlsxwriter") as writer:
+            df_export = df_mes.copy()
+            df_export["fecha"] = pd.to_datetime(df_export["fecha"], errors="coerce").dt.strftime("%Y-%m-%d")
+            df_export[["numero","nombre","equipo","fecha","tipo"]].to_excel(writer, sheet_name="Detalle_Mes", index=False)
+        st.download_button(
+            "⬇️ Descargar Excel (detalle del mes)",
+            data=excel_mes.getvalue(),
+            file_name=f"detalle_mes_{int(anioC)}_{int(mesC):02d}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_det_mes_xlsx"
+        )
+
+        # CSV rápido
+        st.download_button(
+            "⬇️ Descargar CSV (detalle del mes)",
+            data=df_mes[["numero","nombre","equipo","fecha","tipo"]].to_csv(index=False).encode("utf-8"),
+            file_name=f"detalle_mes_{int(anioC)}_{int(mesC):02d}.csv",
+            mime="text/csv",
+            key="dl_det_mes_csv"
+        )
 
 # ---------------- Admin avanzado ----------------
 with tab3:
