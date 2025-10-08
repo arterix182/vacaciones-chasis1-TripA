@@ -121,6 +121,7 @@ def _agenda_df_fresh() -> pd.DataFrame:
 
 def get_agenda_df() -> pd.DataFrame:
     return _agenda_df_fresh()
+
 def append_agenda_row_safe(rec: dict):
     """
     Inserta SOLO si respeta reglas en estado actual del Sheet:
@@ -130,10 +131,10 @@ def append_agenda_row_safe(rec: dict):
     import pandas as pd
     ws = _ws("agenda", AGENDA_HEADERS)
 
-    # Releer estado actual del Sheet (sin caché)
+    # Releer estado actual
     df = _agenda_df_fresh()
 
-    # 🔧 Blindaje extra por si 'fecha' viene como texto o el DF está vacío
+    # Blindaje extra
     if df is None or df.empty or "fecha" not in df.columns:
         df = pd.DataFrame(columns=AGENDA_HEADERS)
     if not pd.api.types.is_datetime64_any_dtype(df.get("fecha", pd.Series([], dtype="datetime64[ns]"))):
@@ -150,7 +151,7 @@ def append_agenda_row_safe(rec: dict):
 
     equipo = str(rec.get("equipo", "")).strip()
 
-    # ✅ Reglas (evitar .dt si quedó vacío)
+    # Reglas
     if df.empty:
         mismos = df.iloc[0:0]
     else:
@@ -183,8 +184,6 @@ def append_agenda_row_safe(rec: dict):
     total = len(df2[df2["fecha"].dt.date == fecha])
     if total > 3:
         raise ValueError("RACE_CONDITION")
-
-
 
 def replace_agenda_df(df: pd.DataFrame):
     ws = _ws("agenda", AGENDA_HEADERS)
