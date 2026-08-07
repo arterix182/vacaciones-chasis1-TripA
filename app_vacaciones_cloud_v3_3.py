@@ -7,7 +7,7 @@ import html as html_lib
 from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
-from storage_gsheets_v4_7 import (
+from storage_gsheets_v4_8 import (
     get_empleados_dict, get_empleados_df, get_agenda_df,
     append_agenda_row_safe, append_agenda_row_admin,
     delete_agenda_rows, replace_empleados_df, append_empleados_rows,
@@ -681,8 +681,8 @@ if st.session_state.is_admin:
             row_height = 52
             header_height = 92
             grid_height = 880
-            colaborador_width = 400
-            equipo_width = 300
+            colaborador_width = 420
+            equipo_width = 0
             funcion_width = 112
         else:
             day_width = 78
@@ -691,8 +691,8 @@ if st.session_state.is_admin:
             row_height = 44
             header_height = 82
             grid_height = 800
-            colaborador_width = 350
-            equipo_width = 255
+            colaborador_width = 370
+            equipo_width = 0
             funcion_width = 100
 
         ultimo = calendar.monthrange(int(anio_i), int(mes_i))[1]
@@ -778,11 +778,23 @@ if st.session_state.is_admin:
             if grp.empty:
                 continue
 
+            # El LET funciona como encabezado visual del equipo.
+            # Los LET permanecen también en su fila normal, tal como pidió el usuario.
+            lets_team = grp[grp["funcion"].astype(str).str.upper().str.strip() == "LET"]
+            if not lets_team.empty:
+                let_names = lets_team["nombre"].astype(str).tolist()
+                if len(let_names) == 1:
+                    header_team = f"{let_names[0]} (LET) · {team.upper()}"
+                else:
+                    header_team = f"{let_names[0]} (LET) +{len(let_names)-1} LET · {team.upper()}"
+            else:
+                header_team = f"SIN LET · {team.upper()}"
+
             group_row = {
                 "es_grupo": True,
                 "Equipo": team.upper(),
                 "Función": "",
-                "Colaborador": "",
+                "Colaborador": header_team,
                 "numero": "",
                 "nombre_real": "",
                 "equipo_real": team,
@@ -821,7 +833,8 @@ if st.session_state.is_admin:
                     backgroundColor:'#cbd5e1',
                     color:'#0f172a',
                     fontWeight:'900',
-                    borderColor:'#cbd5e1'
+                    borderColor:'#cbd5e1',
+                    fontSize:'12px'
                 };
             }
             const colors = {
@@ -907,10 +920,58 @@ if st.session_state.is_admin:
                 elif label == "Permisos": value = int(codes.isin(["PSG","PPSG","DEF","PAT"]).sum())
                 elif label == "INC/Médico": value = int(codes.isin(["INC","SM","RM","EM"]).sum())
                 else:
-                    rol = label.split()[0]
-                    rol_df = edf[edf["funcion"] == rol]
-                    unavailable_nums = set(dd[dd["codigo"].isin(NO_DISPONIBLE)]["numero"].astype(str).str.strip().tolist()) if not dd.empty else set()
-                    value = int((~rol_df["numero"].astype(str).str.strip().isin(unavailable_nums)).sum())
+                    unavailable_nums = set(
+                        dd[dd["codigo"].isin(NO_DISPONIBLE)]["numero"].astype(str).str.strip().tolist()
+                    ) if not dd.empty else set()
+
+                    # Totales operativos por equipo respetando requerimientos.
+                    let_free_total = 0
+                    met_surplus_total = 0
+                    pool_available_total = 0
+
+                    teams_footer = TEAM_ORDER + sorted([
+                        x for x in edf["equipo"].dropna().astype(str).unique().tolist()
+                        if x.strip().lower() not in TEAM_RANK
+                    ])
+
+                    seen_footer = set()
+                    for team_f in teams_footer:
+                        key_team = team_f.strip().lower()
+                        if key_team in seen_footer:
+                            continue
+                        seen_footer.add(key_team)
+
+                        tdf = edf[
+                            edf["equipo"].astype(str).str.strip().str.lower() == key_team
+                        ]
+                        if tdf.empty:
+                            continue
+
+                        nums_t = tdf["numero"].astype(str).str.strip()
+                        disp_t = ~nums_t.isin(unavailable_nums)
+
+                        let_d = int(((tdf["funcion"] == "LET") & disp_t).sum())
+                        met_d = int(((tdf["funcion"] == "MET") & disp_t).sum())
+                        pool_d = int(((tdf["funcion"] == "POOL") & disp_t).sum())
+
+                        req_t = req_map.get(key_team, {"let":0, "met":0})
+                        req_l = int(req_t.get("let",0))
+                        req_m = int(req_t.get("met",0))
+
+                        let_ex = max(let_d - req_l, 0)
+                        met_short = max(req_m - met_d, 0)
+                        let_to_met = min(let_ex, met_short)
+
+                        let_free_total += max(let_ex - let_to_met, 0)
+                        met_surplus_total += max(met_d - req_m, 0)
+                        pool_available_total += pool_d + max(met_d - req_m, 0)
+
+                    if label == "LET libres":
+                        value = let_free_total
+                    elif label == "MET libres":
+                        value = met_surplus_total
+                    else:  # POOL libres
+                        value = pool_available_total
                 prow[str(day)] = value
             pinned_rows.append(prow)
 
@@ -926,9 +987,11 @@ if st.session_state.is_admin:
         gb.configure_column("nombre_real", hide=True)
         gb.configure_column("equipo_real", hide=True)
         gb.configure_column("funcion_real", hide=True)
-        gb.configure_column("Equipo", pinned="left", width=equipo_width, minWidth=230, maxWidth=360, editable=False)
+        # Ahorramos una columna completa: Equipo queda oculto.
+        # El equipo se identifica en la fila encabezado mediante el LET.
+        gb.configure_column("Equipo", hide=True)
         gb.configure_column("Función", pinned="left", width=funcion_width, minWidth=92, maxWidth=120, editable=False, cellStyle=funcion_style)
-        gb.configure_column("Colaborador", pinned="left", width=colaborador_width, minWidth=320, maxWidth=460, editable=False)
+        gb.configure_column("Colaborador", pinned="left", width=colaborador_width + 80, minWidth=390, maxWidth=560, editable=False)
 
         for d in range(1, ultimo+1):
             weekday = weekday_es[dt.date(int(anio_i), int(mes_i), d).weekday()]
@@ -951,7 +1014,7 @@ if st.session_state.is_admin:
 
         group_height_js = JsCode(f"""
         function(params) {{
-            if (params.data && params.data.es_grupo) return 32;
+            if (params.data && params.data.es_grupo) return 36;
             return {row_height};
         }}
         """)
@@ -1136,6 +1199,7 @@ if st.session_state.is_admin:
         # Panel operativo compacto del día seleccionado
         st.markdown("---")
         st.markdown("### 🎯 Control operativo del día")
+        st.caption("Regla de cobertura: un LET disponible puede cubrir un faltante MET únicamente dentro de su mismo equipo. El LET que no se utilice queda marcado como LET libre.")
 
         dia_res = st.selectbox(
             "Día seleccionado",
@@ -1190,12 +1254,27 @@ if st.session_state.is_admin:
             req_let = int(req.get("let",0))
             req_met = int(req.get("met",0))
 
-            falta_let = max(req_let - let_disp, 0)
-            falta_met = max(req_met - met_disp, 0)
+            # Regla operativa:
+            # 1) Los LET cubren primero el requerimiento LET de su propio equipo.
+            # 2) Un LET excedente puede cubrir un faltante MET del MISMO equipo.
+            # 3) Lo que todavía sobre queda como LET libre.
+            let_para_let = min(let_disp, req_let)
+            falta_let = max(req_let - let_para_let, 0)
+
+            let_excedente = max(let_disp - req_let, 0)
+            falta_met_inicial = max(req_met - met_disp, 0)
+            let_cubre_met = min(let_excedente, falta_met_inicial)
+
+            met_cobertura_total = met_disp + let_cubre_met
+            falta_met = max(req_met - met_cobertura_total, 0)
+            let_libre = max(let_excedente - let_cubre_met, 0)
+
             met_sobra = max(met_disp - req_met, 0)
             pool_libre = pool_disp + met_sobra
 
-            if falta_let or falta_met:
+            if req_let == 0 and req_met == 0:
+                estado = "⚪ SIN REQUERIMIENTO"
+            elif falta_let or falta_met:
                 faltantes = []
                 if falta_let:
                     faltantes.append(f"{falta_let} LET")
@@ -1204,14 +1283,14 @@ if st.session_state.is_admin:
                 estado = "🔴 NECESITA " + " Y ".join(faltantes)
             else:
                 estado = "🟢 CUBIERTO"
-                if pool_libre > 0:
-                    estado += f" · 🟠 POOL LIBRE {pool_libre}"
 
             coverage_rows.append({
                 "Equipo": team,
                 "Estado": estado,
-                "LET": f"{let_disp}/{req_let}",
-                "MET": f"{met_disp}/{req_met}",
+                "LET base": f"{let_disp}/{req_let}",
+                "LET→MET": let_cubre_met,
+                "LET libres": let_libre,
+                "MET": f"{met_disp}+{let_cubre_met}/{req_met}" if let_cubre_met else f"{met_disp}/{req_met}",
                 "POOL libre": pool_libre,
             })
 
@@ -1240,7 +1319,7 @@ if st.session_state.is_admin:
             if coverage_rows:
                 coverage_df = pd.DataFrame(coverage_rows)
                 st.dataframe(
-                    coverage_df[["Equipo","Estado","LET","MET","POOL libre"]],
+                    coverage_df[["Equipo","Estado","LET base","LET→MET","LET libres","MET","POOL libre"]],
                     hide_index=True,
                     use_container_width=True,
                     height=min(390, 46 + len(coverage_df) * 36)
