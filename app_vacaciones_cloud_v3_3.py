@@ -7,7 +7,7 @@ import html as html_lib
 from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
-from storage_gsheets_v4_4 import (
+from storage_gsheets_v4_5 import (
     get_empleados_dict, get_empleados_df, get_agenda_df,
     append_agenda_row_safe, append_agenda_row_admin,
     delete_agenda_rows, replace_empleados_df, append_empleados_rows,
@@ -216,41 +216,301 @@ with tab_cap:
         st.info("Ingresa contraseña y número de empleado.")
 
 with tab_cal:
-    st.header("Calendario mensual")
-    agenda = load_agenda(); hoy = dt.date.today()
-    a, m = st.columns(2)
-    anio_c = a.number_input("Año", value=hoy.year, min_value=hoy.year-1, max_value=hoy.year+3, key="c_anio")
-    mes_c = m.selectbox("Mes", range(1,13), index=hoy.month-1, format_func=lambda x: MESES[x-1], key="c_mes")
+    st.markdown("""
+    <div class="matrix-hero" style="margin-bottom:18px">
+      <div class="matrix-title">📅 Calendario mensual</div>
+      <div class="matrix-sub">Vista amplia de vacaciones e incidencias registradas. Desplázate horizontalmente en pantallas pequeñas.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    agenda = load_agenda()
+    hoy = dt.date.today()
+
+    a, m = st.columns([1,1])
+    anio_c = a.number_input(
+        "Año",
+        value=hoy.year,
+        min_value=hoy.year-1,
+        max_value=hoy.year+3,
+        key="c_anio"
+    )
+    mes_c = m.selectbox(
+        "Mes",
+        range(1,13),
+        index=hoy.month-1,
+        format_func=lambda x: MESES[x-1],
+        key="c_mes"
+    )
+
     if agenda.empty:
-        dfm = agenda.copy(); dfm["dia"] = []
+        dfm = agenda.copy()
+        dfm["dia"] = []
+        dfm["codigo"] = []
     else:
-        mask = (agenda["fecha"].dt.year == int(anio_c)) & (agenda["fecha"].dt.month == int(mes_c))
-        dfm = agenda[mask].copy(); dfm["dia"] = dfm["fecha"].dt.day
-    conteo = dfm.groupby("dia")["numero"].count().to_dict() if not dfm.empty else {}
-    nombres = dfm.groupby("dia")["nombre"].apply(list).to_dict() if not dfm.empty else {}
-    cal = calendar.Calendar(firstweekday=0); weeks = cal.monthdayscalendar(int(anio_c), int(mes_c))
-    def color_count(n):
-        return "#e5e7eb" if n == 0 else "#22c55e" if n == 1 else "#facc15" if n == 2 else "#ef4444"
-    cal_html = "<div style='font-family:Arial,sans-serif'><table style='border-collapse:separate;border-spacing:6px;width:100%;table-layout:fixed'>"
-    cal_html += "<tr>" + "".join(f"<th style='padding:8px;color:#94a3b8'>{x}</th>" for x in ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]) + "</tr>"
+        mask = (
+            (agenda["fecha"].dt.year == int(anio_c)) &
+            (agenda["fecha"].dt.month == int(mes_c))
+        )
+        dfm = agenda[mask].copy()
+        dfm["dia"] = dfm["fecha"].dt.day
+        dfm["codigo"] = dfm["tipo"].apply(codigo_tipo)
+
+    # Resumen mensual arriba del calendario
+    total_mes_cal = len(dfm)
+    dias_ocupados = int(dfm["dia"].nunique()) if not dfm.empty else 0
+    dias_llenos = int((dfm.groupby("dia").size() >= 3).sum()) if not dfm.empty else 0
+    vac_mes_cal = int((dfm["codigo"] == "VAC").sum()) if not dfm.empty else 0
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Registros del mes", total_mes_cal)
+    mc2.metric("Días con registro", dias_ocupados)
+    mc3.metric("Días con 3+", dias_llenos)
+    mc4.metric("Vacaciones", vac_mes_cal)
+
+    cal = calendar.Calendar(firstweekday=0)
+    weeks = cal.monthdayscalendar(int(anio_c), int(mes_c))
+    weekday_labels = ["LUN", "MAR", "MIÉ", "JUE", "VIE", "SÁB", "DOM"]
+
+    # Agrupar registros por día para pintar nombres + tipo
+    registros_por_dia = {}
+    if not dfm.empty:
+        for d, grp in dfm.sort_values(["dia","nombre"]).groupby("dia"):
+            registros_por_dia[int(d)] = grp.to_dict("records")
+
+    html_parts = ["""
+    <html>
+    <head>
+    <style>
+      * { box-sizing:border-box; }
+      body {
+        margin:0;
+        background:#0b1220;
+        color:#e5e7eb;
+        font-family:Inter,Segoe UI,Arial,sans-serif;
+      }
+      .calendar-shell {
+        width:100%;
+        overflow-x:auto;
+        padding:10px 8px 18px 8px;
+        scrollbar-color:#475569 #0f172a;
+      }
+      .calendar {
+        min-width:1120px;
+        display:grid;
+        grid-template-columns:repeat(7, minmax(150px, 1fr));
+        gap:10px;
+      }
+      .dow {
+        height:42px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-size:12px;
+        font-weight:900;
+        letter-spacing:.09em;
+        color:#94a3b8;
+        border-bottom:1px solid #334155;
+      }
+      .day-card, .blank {
+        min-height:166px;
+        border-radius:15px;
+      }
+      .blank {
+        background:rgba(15,23,42,.35);
+        border:1px dashed rgba(71,85,105,.28);
+      }
+      .day-card {
+        position:relative;
+        overflow:hidden;
+        background:linear-gradient(145deg,#172033,#111827);
+        border:1px solid #334155;
+        box-shadow:0 8px 20px rgba(2,6,23,.20);
+        padding:11px;
+      }
+      .day-card.weekend {
+        background:linear-gradient(145deg,#1e293b,#111827);
+      }
+      .day-card.today {
+        border:2px solid #fb923c;
+        box-shadow:0 0 0 2px rgba(251,146,60,.18), 0 12px 28px rgba(194,65,12,.28);
+      }
+      .day-card.full {
+        border-color:#ef4444;
+      }
+      .day-card.medium {
+        border-color:#facc15;
+      }
+      .day-card.light {
+        border-color:#22c55e;
+      }
+      .day-top {
+        display:flex;
+        justify-content:space-between;
+        align-items:flex-start;
+        margin-bottom:8px;
+      }
+      .day-number {
+        font-size:24px;
+        font-weight:950;
+        line-height:1;
+        color:#f8fafc;
+      }
+      .today .day-number { color:#fdba74; }
+      .count {
+        min-width:27px;
+        height:27px;
+        padding:0 7px;
+        border-radius:999px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-size:12px;
+        font-weight:900;
+        color:#fff;
+        background:#475569;
+      }
+      .count.c1 { background:#16a34a; }
+      .count.c2 { background:#ca8a04; }
+      .count.c3 { background:#dc2626; }
+      .today-tag {
+        display:inline-block;
+        margin-top:5px;
+        padding:3px 7px;
+        border-radius:999px;
+        background:#f97316;
+        color:white;
+        font-size:9px;
+        font-weight:900;
+        letter-spacing:.08em;
+      }
+      .entries {
+        display:flex;
+        flex-direction:column;
+        gap:5px;
+        margin-top:4px;
+      }
+      .entry {
+        display:grid;
+        grid-template-columns:42px minmax(0,1fr);
+        gap:6px;
+        align-items:center;
+        padding:5px 6px;
+        border-radius:8px;
+        background:rgba(15,23,42,.78);
+        border:1px solid rgba(71,85,105,.45);
+      }
+      .code {
+        border-radius:6px;
+        text-align:center;
+        padding:4px 3px;
+        font-size:9px;
+        font-weight:950;
+        color:white;
+      }
+      .name {
+        min-width:0;
+        overflow:hidden;
+        white-space:nowrap;
+        text-overflow:ellipsis;
+        font-size:10px;
+        color:#f1f5f9;
+        font-weight:700;
+      }
+      .empty-label {
+        margin-top:22px;
+        text-align:center;
+        color:#64748b;
+        font-size:11px;
+      }
+      .more {
+        color:#94a3b8;
+        font-size:10px;
+        padding-left:4px;
+        margin-top:2px;
+      }
+    </style>
+    </head>
+    <body>
+      <div class="calendar-shell">
+        <div class="calendar">
+    """]
+
+    for label in weekday_labels:
+        html_parts.append(f'<div class="dow">{label}</div>')
+
     for week in weeks:
-        cal_html += "<tr>"
-        for day in week:
+        for idx, day in enumerate(week):
             if day == 0:
-                cal_html += "<td></td>"; continue
-            n = int(conteo.get(day, 0)); ns = nombres.get(day, [])
-            lista = "<br>".join(html_lib.escape(str(x)) for x in ns[:3])
-            cal_html += f"<td style='height:120px;vertical-align:top;padding:8px;border-radius:10px;background:{color_count(n)};color:#111827'><div style='font-weight:800;font-size:16px'>{day}</div><div style='font-size:12px'>{n} registro(s)</div><div style='font-size:11px;margin-top:6px;line-height:1.25'>{lista}</div></td>"
-        cal_html += "</tr>"
-    cal_html += "</table></div>"
-    components.html(cal_html, height=90 + len(weeks)*145, scrolling=True)
+                html_parts.append('<div class="blank"></div>')
+                continue
+
+            registros = registros_por_dia.get(day, [])
+            n = len(registros)
+            is_today = (
+                int(anio_c) == hoy.year and
+                int(mes_c) == hoy.month and
+                day == hoy.day
+            )
+            classes = ["day-card"]
+            if idx >= 5:
+                classes.append("weekend")
+            if is_today:
+                classes.append("today")
+            if n >= 3:
+                classes.append("full")
+            elif n == 2:
+                classes.append("medium")
+            elif n == 1:
+                classes.append("light")
+
+            count_cls = "c3" if n >= 3 else "c2" if n == 2 else "c1" if n == 1 else ""
+            today_tag = '<div class="today-tag">HOY</div>' if is_today else ""
+
+            entries_html = []
+            # Mostrar hasta 4; normalmente el usuario solo puede llegar a 3,
+            # pero el administrador sí puede rebasar el límite.
+            for rec in registros[:4]:
+                cod = codigo_tipo(rec.get("tipo",""))
+                color = color_tipo(rec.get("tipo",""))
+                nombre = html_lib.escape(str(rec.get("nombre","")))
+                desc = html_lib.escape(etiqueta_tipo(rec.get("tipo","")))
+                entries_html.append(
+                    f'<div class="entry" title="{desc}">'
+                    f'<div class="code" style="background:{color}">{html_lib.escape(cod)}</div>'
+                    f'<div class="name">{nombre}</div></div>'
+                )
+            if len(registros) > 4:
+                entries_html.append(f'<div class="more">+ {len(registros)-4} registro(s) más</div>')
+            if not registros:
+                entries_html.append('<div class="empty-label">Sin registros</div>')
+
+            html_parts.append(
+                f'<div class="{" ".join(classes)}">'
+                f'<div class="day-top"><div><div class="day-number">{day}</div>{today_tag}</div>'
+                f'<div class="count {count_cls}">{n}</div></div>'
+                f'<div class="entries">{"".join(entries_html)}</div>'
+                f'</div>'
+            )
+
+    html_parts.append("""
+        </div>
+      </div>
+    </body>
+    </html>
+    """)
+
+    components.html(
+        "".join(html_parts),
+        height=120 + len(weeks) * 188,
+        scrolling=False
+    )
 
 if st.session_state.is_admin:
     with tab_matrix:
         st.markdown("""
         <div class="matrix-hero">
           <div class="matrix-title">⚡ Centro de Control de Incidencias</div>
-          <div class="matrix-sub">Haz clic en una celda del empleado y del día. Selecciona la incidencia y se guardará automáticamente.</div>
+          <div class="matrix-sub">Haz clic en empleado + día para editar. La vista Amplia da más aire al calendario; Compacta permite ver más columnas en pantalla.</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -266,10 +526,32 @@ if st.session_state.is_admin:
         } if not req_df.empty else {}
         hoy = dt.date.today()
 
-        top1, top2, top3 = st.columns([1,1,2])
+        top1, top2, top3, top4 = st.columns([1,1,2,1])
         anio_i = top1.number_input("Año", value=hoy.year, min_value=hoy.year-1, max_value=hoy.year+3, key="i_anio")
         mes_i = top2.selectbox("Mes", range(1,13), index=hoy.month-1, format_func=lambda x: MESES[x-1], key="i_mes")
-        busqueda = top3.text_input("🔍 Buscar colaborador, número o equipo", key="i_buscar")
+        busqueda = top3.text_input("🔍 Buscar colaborador, número, equipo o función", key="i_buscar")
+        densidad = top4.selectbox("Vista", ["Amplia", "Compacta"], index=0, key="i_densidad")
+
+        if densidad == "Amplia":
+            day_width = 88
+            day_min = 82
+            day_max = 98
+            row_height = 50
+            header_height = 86
+            grid_height = 900
+            colaborador_width = 390
+            equipo_width = 285
+            funcion_width = 108
+        else:
+            day_width = 70
+            day_min = 66
+            day_max = 78
+            row_height = 42
+            header_height = 76
+            grid_height = 790
+            colaborador_width = 330
+            equipo_width = 245
+            funcion_width = 96
 
         ultimo = calendar.monthrange(int(anio_i), int(mes_i))[1]
         agenda_m = agenda[
@@ -520,9 +802,9 @@ if st.session_state.is_admin:
         gb.configure_column("nombre_real", hide=True)
         gb.configure_column("equipo_real", hide=True)
         gb.configure_column("funcion_real", hide=True)
-        gb.configure_column("Equipo", pinned="left", width=250, minWidth=210, maxWidth=330, editable=False)
-        gb.configure_column("Función", pinned="left", width=92, minWidth=82, maxWidth=105, editable=False, cellStyle=funcion_style)
-        gb.configure_column("Colaborador", pinned="left", width=340, minWidth=280, editable=False)
+        gb.configure_column("Equipo", pinned="left", width=equipo_width, minWidth=230, maxWidth=360, editable=False)
+        gb.configure_column("Función", pinned="left", width=funcion_width, minWidth=92, maxWidth=120, editable=False, cellStyle=funcion_style)
+        gb.configure_column("Colaborador", pinned="left", width=colaborador_width, minWidth=320, maxWidth=460, editable=False)
 
         for d in range(1, ultimo+1):
             weekday = weekday_es[dt.date(int(anio_i), int(mes_i), d).weekday()]
@@ -536,18 +818,18 @@ if st.session_state.is_admin:
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": incidence_options},
                 cellStyle=cell_style,
-                width=72,
-                minWidth=66,
-                maxWidth=82,
+                width=day_width,
+                minWidth=day_min,
+                maxWidth=day_max,
                 wrapHeaderText=True,
-                autoHeaderHeight=True,
+                autoHeaderHeight=False,
             )
 
         gb.configure_grid_options(
             singleClickEdit=True,
             stopEditingWhenCellsLoseFocus=True,
-            rowHeight=43,
-            headerHeight=58,
+            rowHeight=row_height,
+            headerHeight=header_height,
             animateRows=True,
             suppressRowClickSelection=True,
             ensureDomOrder=True,
@@ -563,17 +845,48 @@ if st.session_state.is_admin:
                 "box-shadow": "0 18px 45px rgba(2,6,23,.32) !important",
             },
             ".ag-header": {
-                "background-color": "#0b1220 !important",
-                "border-bottom": "1px solid #334155 !important",
+                "background": "linear-gradient(180deg,#0b1220,#111c31) !important",
+                "border-bottom": "2px solid #334155 !important",
             },
             ".ag-header-cell": {
                 "color": "#f8fafc !important",
                 "font-weight": "800 !important",
                 "border-right": "1px solid #334155 !important",
             },
+            ".ag-header-cell-label": {
+                "height": "100% !important",
+                "display": "flex !important",
+                "align-items": "center !important",
+                "justify-content": "center !important",
+                "overflow": "visible !important",
+                "padding-top": "6px !important",
+                "padding-bottom": "6px !important",
+            },
+            ".ag-header-cell-text": {
+                "white-space": "pre-line !important",
+                "overflow": "visible !important",
+                "text-overflow": "clip !important",
+                "line-height": "1.25 !important",
+                "text-align": "center !important",
+                "font-size": "12px !important",
+            },
+            ".ag-pinned-left-header .ag-header-cell-text": {
+                "white-space": "normal !important",
+                "font-size": "13px !important",
+            },
+            ".ag-pinned-left-cols-container .ag-cell": {
+                "display": "flex !important",
+                "align-items": "center !important",
+            },
+            ".ag-center-cols-container .ag-cell": {
+                "display": "flex !important",
+                "align-items": "center !important",
+                "justify-content": "center !important",
+            },
             ".ag-cell": {
                 "border-right": "1px solid #334155 !important",
                 "border-bottom": "1px solid #334155 !important",
+                "overflow": "visible !important",
             },
             ".ag-cell-focus": {
                 "border": "2px solid #38bdf8 !important",
@@ -612,8 +925,8 @@ if st.session_state.is_admin:
             allow_unsafe_jscode=True,
             theme="alpine",
             custom_css=custom_css,
-            height=820,
-            key=f"inc_grid_{int(anio_i)}_{int(mes_i)}_{busqueda}",
+            height=grid_height,
+            key=f"inc_grid_{int(anio_i)}_{int(mes_i)}_{busqueda}_{densidad}",
         )
 
         edited = pd.DataFrame(response["data"]) if response and response.get("data") is not None else matrix_df.copy()
