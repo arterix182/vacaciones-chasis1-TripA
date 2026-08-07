@@ -7,7 +7,7 @@ import html as html_lib
 from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
-from storage_gsheets_v4_6 import (
+from storage_gsheets_v4_7 import (
     get_empleados_dict, get_empleados_df, get_agenda_df,
     append_agenda_row_safe, append_agenda_row_admin,
     delete_agenda_rows, replace_empleados_df, append_empleados_rows,
@@ -116,7 +116,7 @@ st.markdown("""
         background: linear-gradient(145deg,#101a2d,#162238);
         border: 1px solid #2b405f;
         border-radius: 16px;
-        padding: 14px 16px 16px 16px;
+        padding: 10px 14px 12px 14px;
         margin: 10px 0 12px 0;
         box-shadow: 0 10px 26px rgba(2,6,23,.20);
     }
@@ -134,7 +134,7 @@ st.markdown("""
         gap:10px;
     }
     .dashboard-kpi {
-        min-height:72px;
+        min-height:58px;
         background:rgba(15,23,42,.72);
         border:1px solid #334155;
         border-radius:12px;
@@ -151,7 +151,7 @@ st.markdown("""
     }
     .dashboard-kpi-value {
         color:#f8fafc;
-        font-size:25px;
+        font-size:21px;
         font-weight:950;
         line-height:1;
     }
@@ -725,7 +725,7 @@ if st.session_state.is_admin:
         permisos_mes = int(agenda_m["codigo"].isin(["PSG","PPSG","DEF","PAT"]).sum()) if not agenda_m.empty else 0
         incap_mes = int(agenda_m["codigo"].isin(["INC","SM","RM","EM"]).sum()) if not agenda_m.empty else 0
 
-        render_kpi_panel("Plantilla actual", [
+        render_kpi_panel("Plantilla", [
             ("👥 Personas", total_personas),
             ("🔷 LET", total_let),
             ("🟣 MET", total_met),
@@ -733,26 +733,7 @@ if st.session_state.is_admin:
             ("⚪ Sin función", sin_funcion),
         ])
 
-        render_kpi_panel("Cobertura configurada", [
-            ("🎯 LET requeridos", req_let_total),
-            ("🎯 MET requeridos", req_met_total),
-            ("📋 Equipos configurados", len(req_map)),
-        ])
-
-        render_kpi_panel("Incidencias del mes", [
-            ("Total", total_mes),
-            ("VAC", vac_mes),
-            ("Faltas", faltas_mes),
-            ("Permisos", permisos_mes),
-            ("Médicas / INC", incap_mes),
-        ])
-
-        st.markdown(
-            '<div class="hint-box">🖱️ <b>Edición directa:</b> un clic en empleado + día abre el desplegable. '
-            '📌 Nombres y función quedan congelados a la izquierda · 🔥 HOY se resalta · 🔍 puedes buscar persona, equipo o función. '
-            'El administrador puede superar 3 personas por día. Selecciona <b>— Vacío —</b> para borrar.</div>',
-            unsafe_allow_html=True
-        )
+        st.caption("💡 Clic en empleado + día para editar · HOY resaltado · columnas izquierdas congeladas.")
 
         # Filtro
         edf = empleados_df.copy()
@@ -797,12 +778,9 @@ if st.session_state.is_admin:
             if grp.empty:
                 continue
 
-            grp_let = int((grp["funcion"] == "LET").sum())
-            grp_met = int((grp["funcion"] == "MET").sum())
-            grp_pool = int((grp["funcion"] == "POOL").sum())
             group_row = {
                 "es_grupo": True,
-                "Equipo": f"{team.upper()} · {len(grp)} PERSONAS · LET {grp_let} · MET {grp_met} · POOL {grp_pool}",
+                "Equipo": team.upper(),
                 "Función": "",
                 "Colaborador": "",
                 "numero": "",
@@ -971,6 +949,13 @@ if st.session_state.is_admin:
                 autoHeaderHeight=False,
             )
 
+        group_height_js = JsCode(f"""
+        function(params) {{
+            if (params.data && params.data.es_grupo) return 32;
+            return {row_height};
+        }}
+        """)
+
         gb.configure_grid_options(
             singleClickEdit=True,
             stopEditingWhenCellsLoseFocus=True,
@@ -980,6 +965,7 @@ if st.session_state.is_admin:
             suppressRowClickSelection=True,
             ensureDomOrder=True,
             getRowStyle=row_style,
+            getRowHeight=group_height_js,
             pinnedBottomRowData=pinned_rows,
         )
 
@@ -1147,128 +1133,125 @@ if st.session_state.is_admin:
         )
         st.markdown(legend_html, unsafe_allow_html=True)
 
-        # Resumen por día
+        # Panel operativo compacto del día seleccionado
         st.markdown("---")
-        st.subheader("📊 Resumen diario de incidencias")
+        st.markdown("### 🎯 Control operativo del día")
 
-        if agenda_m.empty:
-            st.info("No hay incidencias en el mes seleccionado.")
-        else:
-            resumen_rows = []
-            for d in range(1, ultimo+1):
-                dd = agenda_m[agenda_m["dia"] == d]
-                codes = dd["codigo"] if not dd.empty else pd.Series(dtype=str)
-                resumen_rows.append({
-                    "Día": d,
-                    "Total": len(dd),
-                    "Vacaciones": int((codes == "VAC").sum()),
-                    "Faltas": int(codes.isin(["FI","FJ"]).sum()),
-                    "Permisos": int(codes.isin(["PSG","PPSG","DEF","PAT"]).sum()),
-                    "Sanciones": int((codes == "SAN").sum()),
-                    "Retardos": int((codes == "RET").sum()),
-                    "Incapacidad / Médico": int(codes.isin(["INC","SM","RM","EM"]).sum()),
-                    "Otros": int(codes.isin(["BJ","TE","PT","TRB"]).sum()),
-                })
-            resumen_df = pd.DataFrame(resumen_rows)
-            st.dataframe(resumen_df, hide_index=True, use_container_width=True, height=330)
+        dia_res = st.selectbox(
+            "Día seleccionado",
+            range(1, ultimo+1),
+            index=min(hoy.day, ultimo)-1,
+            format_func=lambda d: f"{d:02d} de {MESES[int(mes_i)-1]}",
+            key="res_dia_select"
+        )
 
-            dia_res = st.selectbox(
-                "Detalle de un día",
-                range(1, ultimo+1),
-                index=min(hoy.day, ultimo)-1,
-                format_func=lambda d: f"{d:02d} de {MESES[int(mes_i)-1]}",
-                key="res_dia_select"
+        ddf = agenda_m[agenda_m["dia"] == int(dia_res)].copy() if not agenda_m.empty else agenda_m.copy()
+        codes_day = ddf["codigo"] if not ddf.empty else pd.Series(dtype=str)
+
+        resumen_dia = [
+            ("TOTAL", len(ddf)),
+            ("VACACIONES", int((codes_day == "VAC").sum())),
+            ("FALTAS", int(codes_day.isin(["FI","FJ"]).sum())),
+            ("PERMISOS", int(codes_day.isin(["PSG","PPSG","DEF","PAT"]).sum())),
+            ("SANCIONES", int((codes_day == "SAN").sum())),
+            ("RETARDOS", int((codes_day == "RET").sum())),
+            ("INCAPACIDAD / MÉDICO", int(codes_day.isin(["INC","SM","RM","EM"]).sum())),
+            ("OTROS", int(codes_day.isin(["BJ","TE","PT","TRB"]).sum())),
+        ]
+
+        unavailable = set(
+            ddf[ddf["codigo"].isin(NO_DISPONIBLE)]["numero"].astype(str).str.strip().tolist()
+        ) if not ddf.empty else set()
+
+        base_staff = empleados_df.copy()
+        base_staff["funcion"] = base_staff["funcion"].astype(str).str.strip().str.upper()
+
+        coverage_rows = []
+        equipos_calc = TEAM_ORDER + sorted([
+            x for x in base_staff["equipo"].dropna().astype(str).unique().tolist()
+            if x.strip().lower() not in TEAM_RANK
+        ])
+
+        for team in equipos_calc:
+            team_staff = base_staff[
+                base_staff["equipo"].astype(str).str.strip().str.lower() == team.strip().lower()
+            ]
+            if team_staff.empty:
+                continue
+
+            nums_team = team_staff["numero"].astype(str).str.strip()
+            disp_mask = ~nums_team.isin(unavailable)
+
+            let_disp = int(((team_staff["funcion"] == "LET") & disp_mask).sum())
+            met_disp = int(((team_staff["funcion"] == "MET") & disp_mask).sum())
+            pool_disp = int(((team_staff["funcion"] == "POOL") & disp_mask).sum())
+
+            req = req_map.get(team.strip().lower(), {"let":0, "met":0})
+            req_let = int(req.get("let",0))
+            req_met = int(req.get("met",0))
+
+            falta_let = max(req_let - let_disp, 0)
+            falta_met = max(req_met - met_disp, 0)
+            met_sobra = max(met_disp - req_met, 0)
+            pool_libre = pool_disp + met_sobra
+
+            if falta_let or falta_met:
+                faltantes = []
+                if falta_let:
+                    faltantes.append(f"{falta_let} LET")
+                if falta_met:
+                    faltantes.append(f"{falta_met} MET")
+                estado = "🔴 NECESITA " + " Y ".join(faltantes)
+            else:
+                estado = "🟢 CUBIERTO"
+                if pool_libre > 0:
+                    estado += f" · 🟠 POOL LIBRE {pool_libre}"
+
+            coverage_rows.append({
+                "Equipo": team,
+                "Estado": estado,
+                "LET": f"{let_disp}/{req_let}",
+                "MET": f"{met_disp}/{req_met}",
+                "POOL libre": pool_libre,
+            })
+
+        col_res, col_cov = st.columns([0.75, 2.25], gap="large")
+
+        with col_res:
+            st.markdown("#### 📋 Resumen del día")
+            items_html = "".join(
+                f"<div style='display:flex;justify-content:space-between;gap:12px;"
+                f"padding:7px 10px;border-bottom:1px solid #26364f;'>"
+                f"<span style='color:#cbd5e1;font-size:12px;font-weight:800'>{html_lib.escape(label)}</span>"
+                f"<span style='color:#fff;font-size:15px;font-weight:950'>{value}</span>"
+                f"</div>"
+                for label, value in resumen_dia
             )
-            ddf = agenda_m[agenda_m["dia"] == int(dia_res)].copy()
+            st.markdown(
+                f"<div style='border:1px solid #334155;border-radius:14px;overflow:hidden;"
+                f"background:#111827'>{items_html}</div>",
+                unsafe_allow_html=True
+            )
+
+        with col_cov:
+            st.markdown("#### ⚙️ Cobertura por equipo")
+            if not req_map:
+                st.warning("Configura requerimientos en Administración → Requerimientos por equipo.")
+            if coverage_rows:
+                coverage_df = pd.DataFrame(coverage_rows)
+                st.dataframe(
+                    coverage_df[["Equipo","Estado","LET","MET","POOL libre"]],
+                    hide_index=True,
+                    use_container_width=True,
+                    height=min(390, 46 + len(coverage_df) * 36)
+                )
+            else:
+                st.info("No hay equipos para mostrar.")
+
+        with st.expander("👤 Ver personas con incidencia este día", expanded=False):
             if ddf.empty:
                 st.info("Sin incidencias ese día.")
             else:
-                a,b,c,d,e = st.columns(5)
-                a.metric("Total incidencias", len(ddf))
-                b.metric("VAC", int((ddf["codigo"]=="VAC").sum()))
-                c.metric("Faltas", int(ddf["codigo"].isin(["FI","FJ"]).sum()))
-                d.metric("Permisos", int(ddf["codigo"].isin(["PSG","PPSG","DEF","PAT"]).sum()))
-                e.metric("INC / Médico", int(ddf["codigo"].isin(["INC","SM","RM","EM"]).sum()))
-
-                unavailable = set(ddf[ddf["codigo"].isin(NO_DISPONIBLE)]["numero"].astype(str).str.strip().tolist())
-                base_staff = empleados_df.copy()
-                base_staff["funcion"] = base_staff["funcion"].astype(str).str.strip().str.upper()
-                let_libres = int(((base_staff["funcion"]=="LET") & ~base_staff["numero"].astype(str).str.strip().isin(unavailable)).sum())
-                met_libres = int(((base_staff["funcion"]=="MET") & ~base_staff["numero"].astype(str).str.strip().isin(unavailable)).sum())
-                pool_libres = int(((base_staff["funcion"]=="POOL") & ~base_staff["numero"].astype(str).str.strip().isin(unavailable)).sum())
-
-                # Balance por equipo: disponibles vs requerimiento configurado
-                balance_rows = []
-                met_sobrantes_total = 0
-                deficit_let_total = 0
-                deficit_met_total = 0
-                pool_operativo_total = 0
-                equipos_calc = TEAM_ORDER + sorted([
-                    x for x in base_staff["equipo"].dropna().astype(str).unique().tolist()
-                    if x.strip().lower() not in TEAM_RANK
-                ])
-                for team in equipos_calc:
-                    team_staff = base_staff[base_staff["equipo"].astype(str).str.strip().str.lower() == team.strip().lower()]
-                    if team_staff.empty:
-                        continue
-                    nums_team = team_staff["numero"].astype(str).str.strip()
-                    disp_mask = ~nums_team.isin(unavailable)
-                    let_total_t = int((team_staff["funcion"] == "LET").sum())
-                    met_total_t = int((team_staff["funcion"] == "MET").sum())
-                    pool_total_t = int((team_staff["funcion"] == "POOL").sum())
-                    let_disp_t = int(((team_staff["funcion"] == "LET") & disp_mask).sum())
-                    met_disp_t = int(((team_staff["funcion"] == "MET") & disp_mask).sum())
-                    pool_disp_t = int(((team_staff["funcion"] == "POOL") & disp_mask).sum())
-                    req = req_map.get(team.strip().lower(), {"let":0,"met":0})
-                    req_let = int(req.get("let",0)); req_met = int(req.get("met",0))
-                    bal_let = let_disp_t - req_let
-                    bal_met = met_disp_t - req_met
-                    met_a_pool = max(bal_met, 0)
-                    def_let = max(-bal_let, 0)
-                    def_met = max(-bal_met, 0)
-                    pool_potencial = pool_disp_t + met_a_pool
-                    met_sobrantes_total += met_a_pool
-                    deficit_let_total += def_let
-                    deficit_met_total += def_met
-                    pool_operativo_total += pool_potencial
-                    status_parts = []
-                    if def_let: status_parts.append(f"FALTAN {def_let} LET")
-                    if def_met: status_parts.append(f"FALTAN {def_met} MET")
-                    status = "🔴 " + " · ".join(status_parts) if status_parts else "🟢 CUBIERTO"
-                    balance_rows.append({
-                        "Equipo": team,
-                        "LET plantilla": let_total_t,
-                        "LET disponibles": let_disp_t,
-                        "LET requeridos": req_let,
-                        "Balance LET": bal_let,
-                        "MET plantilla": met_total_t,
-                        "MET disponibles": met_disp_t,
-                        "MET requeridos": req_met,
-                        "MET sobrantes → POOL": met_a_pool,
-                        "POOL asignado disponible": pool_disp_t,
-                        "POOL potencial": pool_potencial,
-                        "Estado": status,
-                    })
-
-                r1,r2,r3,r4,r5 = st.columns(5)
-                r1.metric("🔷 LET disponibles", let_libres)
-                r2.metric("🟣 MET disponibles", met_libres)
-                r3.metric("🟠 POOL asignado", pool_libres)
-                r4.metric("➡️ MET sobrantes → POOL", met_sobrantes_total)
-                r5.metric("🧰 POOL potencial", pool_operativo_total)
-
-                d1,d2 = st.columns(2)
-                d1.metric("⚠️ Déficit LET total", deficit_let_total)
-                d2.metric("⚠️ Déficit MET total", deficit_met_total)
-
-                st.markdown("#### ⚙️ Cobertura operativa por equipo")
-                if not req_map:
-                    st.warning("Aún no has configurado requerimientos. Ve a 🛠️ Administración → Requerimientos por equipo.")
-                if balance_rows:
-                    balance_df = pd.DataFrame(balance_rows)
-                    st.dataframe(balance_df, hide_index=True, use_container_width=True, height=360)
-
-                st.markdown("#### Incidencias del día")
                 st.dataframe(
                     ddf[["numero","nombre","equipo","codigo","tipo"]].sort_values(["equipo","nombre"]),
                     hide_index=True,
