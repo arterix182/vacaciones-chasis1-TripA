@@ -7,7 +7,7 @@ import html as html_lib
 from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
-from storage_gsheets_v4_8 import (
+from storage_gsheets_v4_9 import (
     get_empleados_dict, get_empleados_df, get_agenda_df,
     append_agenda_row_safe, append_agenda_row_admin,
     delete_agenda_rows, replace_empleados_df, append_empleados_rows,
@@ -31,6 +31,33 @@ TEAM_ORDER = [
     "Little Boys",
 ]
 TEAM_RANK = {name.lower(): i for i, name in enumerate(TEAM_ORDER)}
+
+# Alias frecuentes para que variantes escritas en Google Sheets no creen equipos duplicados.
+TEAM_ALIASES = {
+    "la flota": "La Flota",
+    "flota": "La Flota",
+    "underzide b": "Underzide B",
+    "under zide b": "Underzide B",
+    "underzide": "Underzide B",
+    "under zide": "Underzide B",
+    "007 delta": "007 Delta",
+    "logianos": "Logianos",
+    "spartans b": "Spartans B",
+    "spartans": "Spartans B",
+    "espartans": "Spartans B",
+    "espartans b": "Spartans B",
+    "dragon force": "Dragon Force",
+    "supremos": "Supremos",
+    "little boys": "Little Boys",
+}
+
+def canonical_team(value):
+    raw = " ".join(str(value or "").strip().split())
+    key = raw.lower()
+    return TEAM_ALIASES.get(key, raw)
+
+def is_operational_team(value):
+    return canonical_team(value).lower() in TEAM_RANK
 
 FUNCIONES = ["LET", "MET", "POOL"]
 FUNCION_COLORS = {"LET":"#06b6d4", "MET":"#8b5cf6", "POOL":"#f59e0b", "":"#64748b"}
@@ -657,11 +684,12 @@ if st.session_state.is_admin:
         agenda = load_agenda()
         req_df = load_requerimientos()
         req_map = {
-            str(r["equipo"]).strip().lower(): {
+            canonical_team(r["equipo"]).strip().lower(): {
                 "let": int(r["let_requeridos"]),
                 "met": int(r["met_requeridos"]),
             }
             for _, r in req_df.iterrows()
+            if is_operational_team(r["equipo"])
         } if not req_df.empty else {}
         hoy = dt.date.today()
 
@@ -749,13 +777,13 @@ if st.session_state.is_admin:
         if "funcion" not in edf.columns:
             edf["funcion"] = ""
         edf["funcion"] = edf["funcion"].astype(str).str.strip().str.upper()
+        edf["equipo_canon"] = edf["equipo"].apply(canonical_team)
 
-        # Orden personalizado exacto
-        def team_rank(team):
-            return TEAM_RANK.get(str(team).strip().lower(), 999)
-
-        edf["_team_rank"] = edf["equipo"].apply(team_rank)
-        edf = edf.sort_values(["_team_rank","equipo","nombre"], kind="stable").reset_index(drop=True)
+        # Matriz exclusivamente en el orden operativo solicitado.
+        # Alias como "ESPARTANS" o "UNDER ZIDE B" se agrupan en su nombre oficial.
+        edf = edf[edf["equipo_canon"].str.lower().isin(TEAM_RANK.keys())].copy()
+        edf["_team_rank"] = edf["equipo_canon"].str.lower().map(TEAM_RANK)
+        edf = edf.sort_values(["_team_rank","nombre"], kind="stable").reset_index(drop=True)
 
         # Valor actual por empleado/día.
         # Si por alguna razón hay más de uno, mostramos el último registro.
@@ -766,15 +794,10 @@ if st.session_state.is_admin:
 
         # Construir matriz incluyendo filas separadoras de equipo
         rows = []
-        known_teams = TEAM_ORDER.copy()
-        extra_teams = [
-            x for x in edf["equipo"].dropna().astype(str).unique().tolist()
-            if x.strip().lower() not in TEAM_RANK
-        ]
-        teams_in_order = known_teams + sorted(extra_teams)
+        teams_in_order = TEAM_ORDER.copy()
 
         for team in teams_in_order:
-            grp = edf[edf["equipo"].astype(str).str.lower().str.strip() == team.lower().strip()]
+            grp = edf[edf["equipo_canon"].astype(str).str.lower().str.strip() == team.lower().strip()]
             if grp.empty:
                 continue
 
@@ -814,7 +837,7 @@ if st.session_state.is_admin:
                     "Colaborador": f"{num}   {er['nombre']}",
                     "numero": num,
                     "nombre_real": str(er["nombre"]),
-                    "equipo_real": str(er["equipo"]),
+                    "equipo_real": canonical_team(er["equipo"]),
                     "funcion_real": funcion,
                 }
                 for d in range(1, ultimo+1):
@@ -929,10 +952,7 @@ if st.session_state.is_admin:
                     met_surplus_total = 0
                     pool_available_total = 0
 
-                    teams_footer = TEAM_ORDER + sorted([
-                        x for x in edf["equipo"].dropna().astype(str).unique().tolist()
-                        if x.strip().lower() not in TEAM_RANK
-                    ])
+                    teams_footer = TEAM_ORDER.copy()
 
                     seen_footer = set()
                     for team_f in teams_footer:
@@ -942,7 +962,7 @@ if st.session_state.is_admin:
                         seen_footer.add(key_team)
 
                         tdf = edf[
-                            edf["equipo"].astype(str).str.strip().str.lower() == key_team
+                            edf["equipo_canon"].astype(str).str.strip().str.lower() == key_team
                         ]
                         if tdf.empty:
                             continue
@@ -958,13 +978,17 @@ if st.session_state.is_admin:
                         req_l = int(req_t.get("let",0))
                         req_m = int(req_t.get("met",0))
 
-                        let_ex = max(let_d - req_l, 0)
+                        # Cobertura flexible: MET titulares -> POOL -> LET del mismo equipo.
+                        # El LET puede cubrir una estación MET sin dejar de contar como LET del equipo.
+                        falta_let_t = max(req_l - let_d, 0)
                         met_short = max(req_m - met_d, 0)
-                        let_to_met = min(let_ex, met_short)
+                        pool_to_met = min(pool_d, met_short)
+                        met_short_after_pool = max(met_short - pool_to_met, 0)
+                        let_to_met = min(let_d, met_short_after_pool) if falta_let_t == 0 else 0
 
-                        let_free_total += max(let_ex - let_to_met, 0)
+                        let_free_total += max(let_d - let_to_met, 0)
                         met_surplus_total += max(met_d - req_m, 0)
-                        pool_available_total += pool_d + max(met_d - req_m, 0)
+                        pool_available_total += max(pool_d - pool_to_met, 0) + max(met_d - req_m, 0)
 
                     if label == "LET libres":
                         value = let_free_total
@@ -1199,7 +1223,7 @@ if st.session_state.is_admin:
         # Panel operativo compacto del día seleccionado
         st.markdown("---")
         st.markdown("### 🎯 Control operativo del día")
-        st.caption("Regla de cobertura: un LET disponible puede cubrir un faltante MET únicamente dentro de su mismo equipo. El LET que no se utilice queda marcado como LET libre.")
+        st.caption("Cobertura: MET titular → POOL del equipo → LET del equipo. Un LET puede cubrir MET sin dejar de ser el LET del equipo; solo deja de contar como LET libre.")
 
         dia_res = st.selectbox(
             "Día seleccionado",
@@ -1229,16 +1253,14 @@ if st.session_state.is_admin:
 
         base_staff = empleados_df.copy()
         base_staff["funcion"] = base_staff["funcion"].astype(str).str.strip().str.upper()
+        base_staff["equipo_canon"] = base_staff["equipo"].apply(canonical_team)
 
         coverage_rows = []
-        equipos_calc = TEAM_ORDER + sorted([
-            x for x in base_staff["equipo"].dropna().astype(str).unique().tolist()
-            if x.strip().lower() not in TEAM_RANK
-        ])
+        equipos_calc = TEAM_ORDER.copy()
 
         for team in equipos_calc:
             team_staff = base_staff[
-                base_staff["equipo"].astype(str).str.strip().str.lower() == team.strip().lower()
+                base_staff["equipo_canon"].astype(str).str.strip().str.lower() == team.strip().lower()
             ]
             if team_staff.empty:
                 continue
@@ -1254,23 +1276,25 @@ if st.session_state.is_admin:
             req_let = int(req.get("let",0))
             req_met = int(req.get("met",0))
 
-            # Regla operativa:
-            # 1) Los LET cubren primero el requerimiento LET de su propio equipo.
-            # 2) Un LET excedente puede cubrir un faltante MET del MISMO equipo.
-            # 3) Lo que todavía sobre queda como LET libre.
-            let_para_let = min(let_disp, req_let)
-            falta_let = max(req_let - let_para_let, 0)
-
-            let_excedente = max(let_disp - req_let, 0)
+            # Regla operativa corregida:
+            # - El requerimiento LET valida que exista el LET del equipo.
+            # - Para cubrir estaciones MET se usan primero los MET disponibles.
+            # - Si faltan MET, se usa primero POOL del mismo equipo y después LET del mismo equipo.
+            # - Un LET puede cubrir una estación MET aun siendo el LET titular del equipo.
+            # - LET libre = LET presente que NO fue necesario para cubrir MET.
+            falta_let = max(req_let - let_disp, 0)
             falta_met_inicial = max(req_met - met_disp, 0)
-            let_cubre_met = min(let_excedente, falta_met_inicial)
 
-            met_cobertura_total = met_disp + let_cubre_met
-            falta_met = max(req_met - met_cobertura_total, 0)
-            let_libre = max(let_excedente - let_cubre_met, 0)
+            pool_cubre_met = min(pool_disp, falta_met_inicial)
+            falta_met_despues_pool = max(falta_met_inicial - pool_cubre_met, 0)
 
+            # Si falta el LET requerido, no lo usamos además para cubrir MET.
+            let_cubre_met = min(let_disp, falta_met_despues_pool) if falta_let == 0 else 0
+            falta_met = max(falta_met_despues_pool - let_cubre_met, 0)
+
+            let_libre = max(let_disp - let_cubre_met, 0)
             met_sobra = max(met_disp - req_met, 0)
-            pool_libre = pool_disp + met_sobra
+            pool_libre = max(pool_disp - pool_cubre_met, 0) + met_sobra
 
             if req_let == 0 and req_met == 0:
                 estado = "⚪ SIN REQUERIMIENTO"
@@ -1287,10 +1311,11 @@ if st.session_state.is_admin:
             coverage_rows.append({
                 "Equipo": team,
                 "Estado": estado,
-                "LET base": f"{let_disp}/{req_let}",
+                "LET": f"{let_disp}/{req_let}",
+                "POOL→MET": pool_cubre_met,
                 "LET→MET": let_cubre_met,
                 "LET libres": let_libre,
-                "MET": f"{met_disp}+{let_cubre_met}/{req_met}" if let_cubre_met else f"{met_disp}/{req_met}",
+                "MET": f"{met_disp}/{req_met}",
                 "POOL libre": pool_libre,
             })
 
@@ -1319,7 +1344,7 @@ if st.session_state.is_admin:
             if coverage_rows:
                 coverage_df = pd.DataFrame(coverage_rows)
                 st.dataframe(
-                    coverage_df[["Equipo","Estado","LET base","LET→MET","LET libres","MET","POOL libre"]],
+                    coverage_df[["Equipo","Estado","LET","POOL→MET","LET→MET","LET libres","MET","POOL libre"]],
                     hide_index=True,
                     use_container_width=True,
                     height=min(390, 46 + len(coverage_df) * 36)
@@ -1420,14 +1445,11 @@ if st.session_state.is_admin:
 
             req_actual = load_requerimientos().copy()
             emp_actual = load_empleados_df().copy()
-            extra_teams = [
-                x for x in emp_actual["equipo"].dropna().astype(str).unique().tolist()
-                if x.strip().lower() not in TEAM_RANK
-            ]
-            equipos_req = TEAM_ORDER + sorted(extra_teams)
+            equipos_req = TEAM_ORDER.copy()
             actual_map = {
-                str(r["equipo"]).strip().lower(): (int(r["let_requeridos"]), int(r["met_requeridos"]))
+                canonical_team(r["equipo"]).strip().lower(): (int(r["let_requeridos"]), int(r["met_requeridos"]))
                 for _, r in req_actual.iterrows()
+                if is_operational_team(r["equipo"])
             } if not req_actual.empty else {}
             req_base = pd.DataFrame([
                 {
@@ -1465,7 +1487,7 @@ if st.session_state.is_admin:
             prev_rows=[]
             for _, rr in preview.iterrows():
                 team=str(rr["equipo"])
-                tt=plantilla[plantilla["equipo"].astype(str).str.strip().str.lower()==team.strip().lower()]
+                tt=plantilla[plantilla["equipo"].apply(canonical_team).astype(str).str.strip().str.lower()==team.strip().lower()]
                 let_p=int((tt["funcion"]=="LET").sum()); met_p=int((tt["funcion"]=="MET").sum()); pool_p=int((tt["funcion"]=="POOL").sum())
                 prev_rows.append({
                     "Equipo":team, "LET plantilla":let_p, "LET requeridos":int(rr["let_requeridos"]),
