@@ -7,7 +7,7 @@ import html as html_lib
 from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
-from storage_gsheets_v4_9 import (
+from storage_gsheets_v4_10 import (
     get_empleados_dict, get_empleados_df, get_agenda_df,
     append_agenda_row_safe, append_agenda_row_admin,
     delete_agenda_rows, replace_empleados_df, append_empleados_rows,
@@ -947,20 +947,18 @@ if st.session_state.is_admin:
                         dd[dd["codigo"].isin(NO_DISPONIBLE)]["numero"].astype(str).str.strip().tolist()
                     ) if not dd.empty else set()
 
-                    # Totales operativos por equipo respetando requerimientos.
+                    # Modelo operativo solicitado:
+                    # El equipo se considera COMPLETO en condiciones normales.
+                    # Cada incidencia genera un hueco. Ese hueco se cubre:
+                    # 1) POOL disponible del mismo equipo
+                    # 2) LET disponible del mismo equipo
+                    # 3) si aún queda hueco, se necesita MET.
                     let_free_total = 0
-                    met_surplus_total = 0
                     pool_available_total = 0
+                    met_surplus_total = 0
 
-                    teams_footer = TEAM_ORDER.copy()
-
-                    seen_footer = set()
-                    for team_f in teams_footer:
+                    for team_f in TEAM_ORDER:
                         key_team = team_f.strip().lower()
-                        if key_team in seen_footer:
-                            continue
-                        seen_footer.add(key_team)
-
                         tdf = edf[
                             edf["equipo_canon"].astype(str).str.strip().str.lower() == key_team
                         ]
@@ -968,33 +966,40 @@ if st.session_state.is_admin:
                             continue
 
                         nums_t = tdf["numero"].astype(str).str.strip()
-                        disp_t = ~nums_t.isin(unavailable_nums)
+                        team_unavailable = set(nums_t[nums_t.isin(unavailable_nums)].tolist())
+                        incidencias_team = len(team_unavailable)
 
-                        let_d = int(((tdf["funcion"] == "LET") & disp_t).sum())
-                        met_d = int(((tdf["funcion"] == "MET") & disp_t).sum())
-                        pool_d = int(((tdf["funcion"] == "POOL") & disp_t).sum())
+                        let_available = int(
+                            ((tdf["funcion"] == "LET") &
+                             ~nums_t.isin(team_unavailable)).sum()
+                        )
+                        pool_available = int(
+                            ((tdf["funcion"] == "POOL") &
+                             ~nums_t.isin(team_unavailable)).sum()
+                        )
 
+                        pool_cubre = min(pool_available, incidencias_team)
+                        restante = max(incidencias_team - pool_cubre, 0)
+                        let_cubre = min(let_available, restante)
+
+                        let_free_total += max(let_available - let_cubre, 0)
+                        pool_available_total += max(pool_available - pool_cubre, 0)
+
+                        # MET libre solo representa excedentes reales sobre el
+                        # requerimiento; no interviene en la cobertura por incidencias.
                         req_t = req_map.get(key_team, {"let":0, "met":0})
-                        req_l = int(req_t.get("let",0))
                         req_m = int(req_t.get("met",0))
-
-                        # Cobertura flexible: MET titulares -> POOL -> LET del mismo equipo.
-                        # El LET puede cubrir una estación MET sin dejar de contar como LET del equipo.
-                        falta_let_t = max(req_l - let_d, 0)
-                        met_short = max(req_m - met_d, 0)
-                        pool_to_met = min(pool_d, met_short)
-                        met_short_after_pool = max(met_short - pool_to_met, 0)
-                        let_to_met = min(let_d, met_short_after_pool) if falta_let_t == 0 else 0
-
-                        let_free_total += max(let_d - let_to_met, 0)
-                        met_surplus_total += max(met_d - req_m, 0)
-                        pool_available_total += max(pool_d - pool_to_met, 0) + max(met_d - req_m, 0)
+                        met_available = int(
+                            ((tdf["funcion"] == "MET") &
+                             ~nums_t.isin(team_unavailable)).sum()
+                        )
+                        met_surplus_total += max(met_available - req_m, 0)
 
                     if label == "LET libres":
                         value = let_free_total
                     elif label == "MET libres":
                         value = met_surplus_total
-                    else:  # POOL libres
+                    else:
                         value = pool_available_total
                 prow[str(day)] = value
             pinned_rows.append(prow)
@@ -1223,7 +1228,11 @@ if st.session_state.is_admin:
         # Panel operativo compacto del día seleccionado
         st.markdown("---")
         st.markdown("### 🎯 Control operativo del día")
-        st.caption("Cobertura: MET titular → POOL del equipo → LET del equipo. Un LET puede cubrir MET sin dejar de ser el LET del equipo; solo deja de contar como LET libre.")
+        st.caption(
+            "Lógica: cada equipo parte cubierto. Las incidencias generan huecos; "
+            "primero los cubre POOL del mismo equipo, después LET del mismo equipo. "
+            "Si todavía quedan huecos, se muestran como MET necesarios."
+        )
 
         dia_res = st.selectbox(
             "Día seleccionado",
@@ -1236,98 +1245,121 @@ if st.session_state.is_admin:
         ddf = agenda_m[agenda_m["dia"] == int(dia_res)].copy() if not agenda_m.empty else agenda_m.copy()
         codes_day = ddf["codigo"] if not ddf.empty else pd.Series(dtype=str)
 
-        resumen_dia = [
-            ("TOTAL", len(ddf)),
-            ("VACACIONES", int((codes_day == "VAC").sum())),
-            ("FALTAS", int(codes_day.isin(["FI","FJ"]).sum())),
-            ("PERMISOS", int(codes_day.isin(["PSG","PPSG","DEF","PAT"]).sum())),
-            ("SANCIONES", int((codes_day == "SAN").sum())),
-            ("RETARDOS", int((codes_day == "RET").sum())),
-            ("INCAPACIDAD / MÉDICO", int(codes_day.isin(["INC","SM","RM","EM"]).sum())),
-            ("OTROS", int(codes_day.isin(["BJ","TE","PT","TRB"]).sum())),
-        ]
-
+        # Solo estas incidencias afectan cobertura.
+        unavailable_day = ddf[ddf["codigo"].isin(NO_DISPONIBLE)].copy() if not ddf.empty else ddf.copy()
         unavailable = set(
-            ddf[ddf["codigo"].isin(NO_DISPONIBLE)]["numero"].astype(str).str.strip().tolist()
-        ) if not ddf.empty else set()
+            unavailable_day["numero"].astype(str).str.strip().tolist()
+        ) if not unavailable_day.empty else set()
 
         base_staff = empleados_df.copy()
         base_staff["funcion"] = base_staff["funcion"].astype(str).str.strip().str.upper()
         base_staff["equipo_canon"] = base_staff["equipo"].apply(canonical_team)
+        base_staff = base_staff[
+            base_staff["equipo_canon"].astype(str).str.lower().isin(TEAM_RANK.keys())
+        ].copy()
 
         coverage_rows = []
-        equipos_calc = TEAM_ORDER.copy()
+        lets_libres_total = 0
 
-        for team in equipos_calc:
+        # Denominador esperado para "LET libres X de Y".
+        lets_requeridos_total = sum(
+            int(req_map.get(team.lower(), {}).get("let", 0))
+            for team in TEAM_ORDER
+        )
+        if lets_requeridos_total <= 0:
+            lets_requeridos_total = int((base_staff["funcion"] == "LET").sum())
+
+        for team in TEAM_ORDER:
             team_staff = base_staff[
-                base_staff["equipo_canon"].astype(str).str.strip().str.lower() == team.strip().lower()
+                base_staff["equipo_canon"].astype(str).str.strip().str.lower() == team.lower()
             ]
             if team_staff.empty:
                 continue
 
             nums_team = team_staff["numero"].astype(str).str.strip()
-            disp_mask = ~nums_team.isin(unavailable)
+            team_unavailable = set(nums_team[nums_team.isin(unavailable)].tolist())
 
-            let_disp = int(((team_staff["funcion"] == "LET") & disp_mask).sum())
-            met_disp = int(((team_staff["funcion"] == "MET") & disp_mask).sum())
-            pool_disp = int(((team_staff["funcion"] == "POOL") & disp_mask).sum())
+            # La cantidad de huecos la define la cantidad de incidencias no disponibles.
+            incidencias_team = len(team_unavailable)
 
-            req = req_map.get(team.strip().lower(), {"let":0, "met":0})
-            req_let = int(req.get("let",0))
+            # POOL y LET sí deben estar presentes para poder cubrir.
+            pool_available = int(
+                ((team_staff["funcion"] == "POOL") &
+                 ~nums_team.isin(team_unavailable)).sum()
+            )
+            let_available = int(
+                ((team_staff["funcion"] == "LET") &
+                 ~nums_team.isin(team_unavailable)).sum()
+            )
+
+            # Excel solicitado:
+            # 1ª cobertura = POOL, 2ª cobertura = LET, después faltan MET.
+            pool_cubre = min(pool_available, incidencias_team)
+            huecos_restantes = max(incidencias_team - pool_cubre, 0)
+
+            let_cubre = min(let_available, huecos_restantes)
+            huecos_restantes = max(huecos_restantes - let_cubre, 0)
+
+            let_libre = max(let_available - let_cubre, 0)
+            pool_libre = max(pool_available - pool_cubre, 0)
+            lets_libres_total += let_libre
+
+            req = req_map.get(team.lower(), {"let":0, "met":0})
             req_met = int(req.get("met",0))
 
-            # Regla operativa corregida:
-            # - El requerimiento LET valida que exista el LET del equipo.
-            # - Para cubrir estaciones MET se usan primero los MET disponibles.
-            # - Si faltan MET, se usa primero POOL del mismo equipo y después LET del mismo equipo.
-            # - Un LET puede cubrir una estación MET aun siendo el LET titular del equipo.
-            # - LET libre = LET presente que NO fue necesario para cubrir MET.
-            falta_let = max(req_let - let_disp, 0)
-            falta_met_inicial = max(req_met - met_disp, 0)
-
-            pool_cubre_met = min(pool_disp, falta_met_inicial)
-            falta_met_despues_pool = max(falta_met_inicial - pool_cubre_met, 0)
-
-            # Si falta el LET requerido, no lo usamos además para cubrir MET.
-            let_cubre_met = min(let_disp, falta_met_despues_pool) if falta_let == 0 else 0
-            falta_met = max(falta_met_despues_pool - let_cubre_met, 0)
-
-            let_libre = max(let_disp - let_cubre_met, 0)
-            met_sobra = max(met_disp - req_met, 0)
-            pool_libre = max(pool_disp - pool_cubre_met, 0) + met_sobra
-
-            if req_let == 0 and req_met == 0:
+            if req_met <= 0:
                 estado = "⚪ SIN REQUERIMIENTO"
-            elif falta_let or falta_met:
-                faltantes = []
-                if falta_let:
-                    faltantes.append(f"{falta_let} LET")
-                if falta_met:
-                    faltantes.append(f"{falta_met} MET")
-                estado = "🔴 NECESITA " + " Y ".join(faltantes)
+            elif huecos_restantes > 0:
+                estado = f"🔴 NECESITA {huecos_restantes} MET"
             else:
                 estado = "🟢 CUBIERTO"
 
             coverage_rows.append({
                 "Equipo": team,
-                "Estado": estado,
-                "LET": f"{let_disp}/{req_let}",
-                "POOL→MET": pool_cubre_met,
-                "LET→MET": let_cubre_met,
-                "LET libres": let_libre,
-                "MET": f"{met_disp}/{req_met}",
+                "Incidencias": incidencias_team,
+                "POOL cubre": pool_cubre,
+                "LET cubre": let_cubre,
+                "LET libre": let_libre,
                 "POOL libre": pool_libre,
+                "Estado": estado,
             })
 
-        col_res, col_cov = st.columns([0.75, 2.25], gap="large")
+        # Resumen exactamente orientado al día seleccionado.
+        # Permiso se separa de Paternidad y Defunción.
+        known_codes = {
+            "VAC","FI","FJ","PSG","PPSG","SAN","RET","INC","PAT",
+            "SM","RM","DEF","EM","BJ","TE","PT","TRB"
+        }
+        otros_count = int((~codes_day.isin(known_codes)).sum()) if not codes_day.empty else 0
+
+        resumen_dia = [
+            ("LETS LIBRES", f"{lets_libres_total} de {lets_requeridos_total}"),
+            ("VACACIONES", int((codes_day == "VAC").sum())),
+            ("FALTAS", int(codes_day.isin(["FI","FJ"]).sum())),
+            ("PERMISO", int(codes_day.isin(["PSG","PPSG"]).sum())),
+            ("SANCIONES", int((codes_day == "SAN").sum())),
+            ("RETARDOS", int((codes_day == "RET").sum())),
+            ("INCAPACIDAD", int((codes_day == "INC").sum())),
+            ("PATERNIDAD", int((codes_day == "PAT").sum())),
+            ("SERVICIO MÉDICO", int((codes_day == "SM").sum())),
+            ("RESTRICCIÓN MÉDICA", int((codes_day == "RM").sum())),
+            ("DEFUNCIÓN", int((codes_day == "DEF").sum())),
+            ("EMBARAZADA", int((codes_day == "EM").sum())),
+            ("BAJA", int((codes_day == "BJ").sum())),
+            ("PARO TÉCNICO", int((codes_day == "PT").sum())),
+            ("SOPORTE TE", int((codes_day == "TE").sum())),
+            ("OTROS", otros_count),
+        ]
+
+        col_res, col_cov = st.columns([0.72, 2.28], gap="large")
 
         with col_res:
             st.markdown("#### 📋 Resumen del día")
             items_html = "".join(
-                f"<div style='display:flex;justify-content:space-between;gap:12px;"
+                f"<div style='display:flex;justify-content:space-between;gap:14px;"
                 f"padding:7px 10px;border-bottom:1px solid #26364f;'>"
-                f"<span style='color:#cbd5e1;font-size:12px;font-weight:800'>{html_lib.escape(label)}</span>"
-                f"<span style='color:#fff;font-size:15px;font-weight:950'>{value}</span>"
+                f"<span style='color:#cbd5e1;font-size:12px;font-weight:800'>{html_lib.escape(str(label))}</span>"
+                f"<span style='color:#fff;font-size:15px;font-weight:950;white-space:nowrap'>{html_lib.escape(str(value))}</span>"
                 f"</div>"
                 for label, value in resumen_dia
             )
@@ -1341,10 +1373,18 @@ if st.session_state.is_admin:
             st.markdown("#### ⚙️ Cobertura por equipo")
             if not req_map:
                 st.warning("Configura requerimientos en Administración → Requerimientos por equipo.")
+
             if coverage_rows:
                 coverage_df = pd.DataFrame(coverage_rows)
+
+                # El orden queda fijo exactamente como fue solicitado.
+                coverage_df["__orden"] = coverage_df["Equipo"].str.lower().map(TEAM_RANK)
+                coverage_df = coverage_df.sort_values("__orden", kind="stable").drop(columns="__orden")
+
                 st.dataframe(
-                    coverage_df[["Equipo","Estado","LET","POOL→MET","LET→MET","LET libres","MET","POOL libre"]],
+                    coverage_df[
+                        ["Equipo","Incidencias","POOL cubre","LET cubre","LET libre","POOL libre","Estado"]
+                    ],
                     hide_index=True,
                     use_container_width=True,
                     height=min(390, 46 + len(coverage_df) * 36)
@@ -1356,8 +1396,14 @@ if st.session_state.is_admin:
             if ddf.empty:
                 st.info("Sin incidencias ese día.")
             else:
+                detalle = ddf.copy()
+                detalle["equipo_canon"] = detalle["equipo"].apply(canonical_team)
+                detalle["__orden"] = detalle["equipo_canon"].str.lower().map(TEAM_RANK)
+                detalle = detalle.sort_values(["__orden","nombre"], kind="stable")
                 st.dataframe(
-                    ddf[["numero","nombre","equipo","codigo","tipo"]].sort_values(["equipo","nombre"]),
+                    detalle[["numero","nombre","equipo_canon","codigo","tipo"]].rename(
+                        columns={"equipo_canon":"equipo"}
+                    ),
                     hide_index=True,
                     use_container_width=True
                 )
