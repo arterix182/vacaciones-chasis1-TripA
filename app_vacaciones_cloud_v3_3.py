@@ -7,7 +7,7 @@ import html as html_lib
 from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
-from storage_gsheets_v4_11 import (
+from storage_gsheets_v4_12 import (
     get_empleados_dict, get_empleados_df, get_agenda_df,
     append_agenda_row_safe, append_agenda_row_admin,
     delete_agenda_rows, replace_empleados_df, append_empleados_rows,
@@ -1384,6 +1384,15 @@ if st.session_state.is_admin:
             ("PARO TÉCNICO", int((codes_day == "PT").sum())),
             ("SOPORTE TE", int((codes_day == "TE").sum())),
             ("OTROS", otros_count),
+        ]
+
+        # Ocultar incidencias con valor 0 o vacío.
+        # ÁREA y LETS LIBRES siempre permanecen visibles.
+        resumen_dia = [
+            (label, value)
+            for label, value in resumen_dia
+            if label in ("ÁREA", "LETS LIBRES")
+            or (value not in (0, "", None))
         ]
 
         col_res, col_cov = st.columns([0.72, 2.28], gap="large")
