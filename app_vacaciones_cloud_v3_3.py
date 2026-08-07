@@ -7,7 +7,7 @@ import html as html_lib
 from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
-from storage_gsheets_v4_5 import (
+from storage_gsheets_v4_6 import (
     get_empleados_dict, get_empleados_df, get_agenda_df,
     append_agenda_row_safe, append_agenda_row_admin,
     delete_agenda_rows, replace_empleados_df, append_empleados_rows,
@@ -38,36 +38,158 @@ FUNCION_COLORS = {"LET":"#06b6d4", "MET":"#8b5cf6", "POOL":"#f59e0b", "":"#64748
 # RET y TRB sí se consideran disponibles.
 NO_DISPONIBLE = {"VAC","PSG","PPSG","FI","FJ","SAN","DEF","PAT","INC","SM","RM","EM","BJ","TE","PT"}
 
-# Diseño general
+# Diseño general — V4.6
 st.markdown("""
 <style>
-    .block-container {padding-top: 1.35rem; padding-bottom: 2rem; max-width: 98%;}
-    div[data-testid="stMetric"] {
-        background: linear-gradient(145deg, rgba(15,23,42,.96), rgba(30,41,59,.92));
-        border: 1px solid rgba(56,189,248,.22);
-        border-radius: 16px;
-        padding: 12px 16px;
-        box-shadow: 0 10px 30px rgba(2,6,23,.22);
+    /* Evita que la barra superior de Streamlit tape las pestañas */
+    .block-container {
+        padding-top: 4.4rem !important;
+        padding-bottom: 2.5rem !important;
+        max-width: 1900px !important;
+        width: calc(100% - 32px) !important;
+        margin: 0 auto !important;
     }
-    div[data-testid="stMetricLabel"] {color:#94a3b8;}
-    div[data-testid="stMetricValue"] {color:#f8fafc; font-weight:800;}
+
+    /* Pestañas: completas, legibles y con scroll horizontal si hace falta */
+    div[data-baseweb="tab-list"] {
+        gap: 8px !important;
+        overflow-x: auto !important;
+        overflow-y: visible !important;
+        padding: 10px 6px 12px 6px !important;
+        margin: 0 0 18px 0 !important;
+        scrollbar-width: thin;
+        scrollbar-color: #475569 #111827;
+        background: rgba(11,18,32,.94);
+        border: 1px solid #26364f;
+        border-radius: 14px;
+        box-shadow: 0 10px 28px rgba(2,6,23,.18);
+    }
+    button[data-baseweb="tab"] {
+        flex: 0 0 auto !important;
+        min-height: 48px !important;
+        padding: 0 16px !important;
+        border-radius: 10px 10px 6px 6px !important;
+        white-space: nowrap !important;
+        overflow: visible !important;
+    }
+    button[data-baseweb="tab"] p {
+        font-size: 15px !important;
+        line-height: 1.2 !important;
+        font-weight: 800 !important;
+        white-space: nowrap !important;
+        overflow: visible !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background: linear-gradient(180deg, rgba(37,99,235,.20), rgba(15,23,42,.10)) !important;
+    }
+
+    /* Títulos más ordenados */
+    h1, h2, h3 {
+        letter-spacing: -0.02em;
+    }
+
+    /* Hero principal */
     .matrix-hero {
-        padding: 18px 22px;
+        padding: 20px 24px;
         border-radius: 18px;
         background: linear-gradient(120deg,#0f172a 0%,#172554 48%,#0c4a6e 100%);
         border: 1px solid rgba(56,189,248,.30);
-        box-shadow: 0 16px 44px rgba(2,6,23,.32);
-        margin-bottom: 14px;
+        box-shadow: 0 16px 44px rgba(2,6,23,.28);
+        margin: 0 0 18px 0;
     }
-    .matrix-title {font-size: 28px; font-weight: 900; color:#f8fafc; margin:0;}
-    .matrix-sub {color:#bae6fd; margin-top:6px; font-size:14px;}
+    .matrix-title {
+        font-size: 26px;
+        line-height: 1.15;
+        font-weight: 900;
+        color:#f8fafc;
+        margin:0;
+    }
+    .matrix-sub {
+        color:#bae6fd;
+        margin-top:7px;
+        font-size:13px;
+        line-height:1.45;
+    }
+
+    /* Paneles de resumen: reemplazan filas desparejas de métricas */
+    .dashboard-panel {
+        background: linear-gradient(145deg,#101a2d,#162238);
+        border: 1px solid #2b405f;
+        border-radius: 16px;
+        padding: 14px 16px 16px 16px;
+        margin: 10px 0 12px 0;
+        box-shadow: 0 10px 26px rgba(2,6,23,.20);
+    }
+    .dashboard-panel-title {
+        color:#93c5fd;
+        font-size:12px;
+        font-weight:900;
+        letter-spacing:.08em;
+        text-transform:uppercase;
+        margin-bottom:10px;
+    }
+    .dashboard-kpis {
+        display:grid;
+        grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+        gap:10px;
+    }
+    .dashboard-kpi {
+        min-height:72px;
+        background:rgba(15,23,42,.72);
+        border:1px solid #334155;
+        border-radius:12px;
+        padding:10px 12px;
+        display:flex;
+        flex-direction:column;
+        justify-content:center;
+    }
+    .dashboard-kpi-label {
+        color:#94a3b8;
+        font-size:11px;
+        font-weight:700;
+        margin-bottom:4px;
+    }
+    .dashboard-kpi-value {
+        color:#f8fafc;
+        font-size:25px;
+        font-weight:950;
+        line-height:1;
+    }
+
     .hint-box {
-        background:rgba(14,116,144,.14);
+        background:rgba(14,116,144,.12);
         border:1px solid rgba(34,211,238,.28);
         border-radius:14px;
-        padding:10px 14px;
-        margin:8px 0 14px 0;
+        padding:11px 14px;
+        margin:10px 0 16px 0;
         color:#cffafe;
+        font-size:12px;
+        line-height:1.45;
+    }
+
+    /* Evitar controles excesivamente estirados */
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stSelectbox"] > div > div,
+    div[data-testid="stNumberInput"] input {
+        min-height: 42px;
+    }
+
+    @media (max-width: 900px) {
+        .block-container {
+            padding-top: 5.2rem !important;
+            width: calc(100% - 18px) !important;
+        }
+        button[data-baseweb="tab"] {
+            min-height: 50px !important;
+            padding: 0 14px !important;
+        }
+        button[data-baseweb="tab"] p {
+            font-size: 14px !important;
+        }
+        .matrix-title { font-size:22px; }
+        .dashboard-kpis {
+            grid-template-columns:repeat(2,minmax(0,1fr));
+        }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -116,6 +238,23 @@ def etiqueta_tipo(tipo):
 def color_tipo(tipo):
     cod = codigo_tipo(tipo)
     return INCIDENCIAS.get(cod, (str(tipo), "#475569"))[1]
+
+def render_kpi_panel(title, items):
+    cards = []
+    for label, value in items:
+        cards.append(
+            f"<div class='dashboard-kpi'>"
+            f"<div class='dashboard-kpi-label'>{html_lib.escape(str(label))}</div>"
+            f"<div class='dashboard-kpi-value'>{html_lib.escape(str(value))}</div>"
+            f"</div>"
+        )
+    st.markdown(
+        f"<div class='dashboard-panel'>"
+        f"<div class='dashboard-panel-title'>{html_lib.escape(str(title))}</div>"
+        f"<div class='dashboard-kpis'>{''.join(cards)}</div>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
 
 @st.cache_data(ttl=5)
 def load_empleados():
@@ -510,7 +649,7 @@ if st.session_state.is_admin:
         st.markdown("""
         <div class="matrix-hero">
           <div class="matrix-title">⚡ Centro de Control de Incidencias</div>
-          <div class="matrix-sub">Haz clic en empleado + día para editar. La vista Amplia da más aire al calendario; Compacta permite ver más columnas en pantalla.</div>
+          <div class="matrix-sub">Haz clic en empleado + día para editar. En vista Amplia los días conservan un tamaño cómodo y se navega horizontalmente; Compacta muestra más columnas.</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -526,32 +665,35 @@ if st.session_state.is_admin:
         } if not req_df.empty else {}
         hoy = dt.date.today()
 
-        top1, top2, top3, top4 = st.columns([1,1,2,1])
+        st.markdown("##### Filtros de la matriz")
+        top1, top2, top3, top4 = st.columns([1,1,2.2,1])
         anio_i = top1.number_input("Año", value=hoy.year, min_value=hoy.year-1, max_value=hoy.year+3, key="i_anio")
         mes_i = top2.selectbox("Mes", range(1,13), index=hoy.month-1, format_func=lambda x: MESES[x-1], key="i_mes")
         busqueda = top3.text_input("🔍 Buscar colaborador, número, equipo o función", key="i_buscar")
         densidad = top4.selectbox("Vista", ["Amplia", "Compacta"], index=0, key="i_densidad")
 
         if densidad == "Amplia":
-            day_width = 88
-            day_min = 82
-            day_max = 98
-            row_height = 50
-            header_height = 86
-            grid_height = 900
-            colaborador_width = 390
-            equipo_width = 285
-            funcion_width = 108
+            # Priorizamos legibilidad. No intentamos meter los 31 días a la fuerza:
+            # la matriz usa desplazamiento horizontal.
+            day_width = 104
+            day_min = 98
+            day_max = 112
+            row_height = 52
+            header_height = 92
+            grid_height = 880
+            colaborador_width = 400
+            equipo_width = 300
+            funcion_width = 112
         else:
-            day_width = 70
-            day_min = 66
-            day_max = 78
-            row_height = 42
-            header_height = 76
-            grid_height = 790
-            colaborador_width = 330
-            equipo_width = 245
-            funcion_width = 96
+            day_width = 78
+            day_min = 74
+            day_max = 86
+            row_height = 44
+            header_height = 82
+            grid_height = 800
+            colaborador_width = 350
+            equipo_width = 255
+            funcion_width = 100
 
         ultimo = calendar.monthrange(int(anio_i), int(mes_i))[1]
         agenda_m = agenda[
@@ -573,19 +715,8 @@ if st.session_state.is_admin:
         total_pool = int((empleados_df["funcion"] == "POOL").sum())
         sin_funcion = int((~empleados_df["funcion"].isin(FUNCIONES)).sum())
 
-        p1,p2,p3,p4,p5 = st.columns(5)
-        p1.metric("👥 Personas", total_personas)
-        p2.metric("🔷 LET", total_let)
-        p3.metric("🟣 MET", total_met)
-        p4.metric("🟠 POOL", total_pool)
-        p5.metric("⚪ Sin función", sin_funcion)
-
         req_let_total = sum(v.get("let",0) for v in req_map.values())
         req_met_total = sum(v.get("met",0) for v in req_map.values())
-        q1,q2,q3 = st.columns(3)
-        q1.metric("🎯 LET requeridos", req_let_total)
-        q2.metric("🎯 MET requeridos", req_met_total)
-        q3.metric("📋 Equipos configurados", len(req_map))
 
         # KPIs mensuales
         total_mes = len(agenda_m)
@@ -594,12 +725,27 @@ if st.session_state.is_admin:
         permisos_mes = int(agenda_m["codigo"].isin(["PSG","PPSG","DEF","PAT"]).sum()) if not agenda_m.empty else 0
         incap_mes = int(agenda_m["codigo"].isin(["INC","SM","RM","EM"]).sum()) if not agenda_m.empty else 0
 
-        k1,k2,k3,k4,k5 = st.columns(5)
-        k1.metric("Incidencias del mes", total_mes)
-        k2.metric("Vacaciones", vac_mes)
-        k3.metric("Faltas", faltas_mes)
-        k4.metric("Permisos", permisos_mes)
-        k5.metric("Médicas / INC", incap_mes)
+        render_kpi_panel("Plantilla actual", [
+            ("👥 Personas", total_personas),
+            ("🔷 LET", total_let),
+            ("🟣 MET", total_met),
+            ("🟠 POOL", total_pool),
+            ("⚪ Sin función", sin_funcion),
+        ])
+
+        render_kpi_panel("Cobertura configurada", [
+            ("🎯 LET requeridos", req_let_total),
+            ("🎯 MET requeridos", req_met_total),
+            ("📋 Equipos configurados", len(req_map)),
+        ])
+
+        render_kpi_panel("Incidencias del mes", [
+            ("Total", total_mes),
+            ("VAC", vac_mes),
+            ("Faltas", faltas_mes),
+            ("Permisos", permisos_mes),
+            ("Médicas / INC", incap_mes),
+        ])
 
         st.markdown(
             '<div class="hint-box">🖱️ <b>Edición directa:</b> un clic en empleado + día abre el desplegable. '
@@ -839,10 +985,29 @@ if st.session_state.is_admin:
 
         custom_css = {
             ".ag-root-wrapper": {
+                "width": "100% !important",
                 "border": "1px solid #334155 !important",
                 "border-radius": "16px !important",
                 "overflow": "hidden !important",
                 "box-shadow": "0 18px 45px rgba(2,6,23,.32) !important",
+                "background": "#111827 !important",
+                "font-size": "13px !important",
+            },
+            ".ag-root-wrapper-body": {
+                "background": "#111827 !important",
+            },
+            ".ag-body-viewport": {
+                "background": "#111827 !important",
+            },
+            ".ag-center-cols-viewport": {
+                "background": "#111827 !important",
+            },
+            ".ag-center-cols-container": {
+                "background": "#111827 !important",
+            },
+            ".ag-body-horizontal-scroll": {
+                "background": "#0b1220 !important",
+                "min-height": "16px !important",
             },
             ".ag-header": {
                 "background": "linear-gradient(180deg,#0b1220,#111c31) !important",
@@ -866,9 +1031,10 @@ if st.session_state.is_admin:
                 "white-space": "pre-line !important",
                 "overflow": "visible !important",
                 "text-overflow": "clip !important",
-                "line-height": "1.25 !important",
+                "line-height": "1.35 !important",
                 "text-align": "center !important",
-                "font-size": "12px !important",
+                "font-size": "13px !important",
+                "font-weight": "900 !important",
             },
             ".ag-pinned-left-header .ag-header-cell-text": {
                 "white-space": "normal !important",
