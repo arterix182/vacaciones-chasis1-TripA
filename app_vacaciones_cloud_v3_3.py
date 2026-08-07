@@ -7,7 +7,7 @@ import html as html_lib
 from io import BytesIO
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
-from storage_gsheets_v4_10 import (
+from storage_gsheets_v4_11 import (
     get_empleados_dict, get_empleados_df, get_agenda_df,
     append_agenda_row_safe, append_agenda_row_admin,
     delete_agenda_rows, replace_empleados_df, append_empleados_rows,
@@ -265,6 +265,76 @@ def etiqueta_tipo(tipo):
 def color_tipo(tipo):
     cod = codigo_tipo(tipo)
     return INCIDENCIAS.get(cod, (str(tipo), "#475569"))[1]
+
+
+def calcular_cobertura_equipo(team_staff, unavailable_nums, req_met=0):
+    """
+    Lógica operativa CHASIS 1:
+    - Los MET son la plantilla base que cubre las estaciones.
+    - POOL es respaldo EXTRA y cubre la primera ausencia de un MET.
+    - LET es respaldo EXTRA y cubre la segunda ausencia de un MET.
+    - Una incidencia del propio POOL o LET los vuelve indisponibles,
+      pero NO crea un hueco de estación MET.
+    """
+    if team_staff is None or team_staff.empty:
+        return {
+            "incidencias": 0,
+            "ausencias_met": 0,
+            "pool_cubre": 0,
+            "let_cubre": 0,
+            "let_libre": 0,
+            "pool_libre": 0,
+            "met_faltantes": 0,
+            "estado": "⚪ SIN PERSONAL",
+        }
+
+    tdf = team_staff.copy()
+    tdf["funcion"] = tdf["funcion"].astype(str).str.strip().str.upper()
+    nums = tdf["numero"].astype(str).str.strip()
+    unavailable_nums = set(str(x).strip() for x in unavailable_nums)
+
+    incidencias = int(nums.isin(unavailable_nums).sum())
+
+    # Solo la ausencia de un MET deja una estación descubierta.
+    ausencias_met = int(
+        ((tdf["funcion"] == "MET") & nums.isin(unavailable_nums)).sum()
+    )
+
+    pool_disponible = int(
+        ((tdf["funcion"] == "POOL") & ~nums.isin(unavailable_nums)).sum()
+    )
+    let_disponible = int(
+        ((tdf["funcion"] == "LET") & ~nums.isin(unavailable_nums)).sum()
+    )
+
+    # Prioridad: POOL primero, LET después.
+    pool_cubre = min(pool_disponible, ausencias_met)
+    pendiente = max(ausencias_met - pool_cubre, 0)
+
+    let_cubre = min(let_disponible, pendiente)
+    met_faltantes = max(pendiente - let_cubre, 0)
+
+    pool_libre = max(pool_disponible - pool_cubre, 0)
+    let_libre = max(let_disponible - let_cubre, 0)
+
+    if int(req_met) <= 0:
+        estado = "⚪ SIN REQUERIMIENTO"
+    elif met_faltantes > 0:
+        estado = f"🔴 NECESITA {met_faltantes} MET"
+    else:
+        estado = "🟢 CUBIERTO"
+
+    return {
+        "incidencias": incidencias,
+        "ausencias_met": ausencias_met,
+        "pool_cubre": pool_cubre,
+        "let_cubre": let_cubre,
+        "let_libre": let_libre,
+        "pool_libre": pool_libre,
+        "met_faltantes": met_faltantes,
+        "estado": estado,
+    }
+
 
 def render_kpi_panel(title, items):
     cards = []
@@ -947,12 +1017,8 @@ if st.session_state.is_admin:
                         dd[dd["codigo"].isin(NO_DISPONIBLE)]["numero"].astype(str).str.strip().tolist()
                     ) if not dd.empty else set()
 
-                    # Modelo operativo solicitado:
-                    # El equipo se considera COMPLETO en condiciones normales.
-                    # Cada incidencia genera un hueco. Ese hueco se cubre:
-                    # 1) POOL disponible del mismo equipo
-                    # 2) LET disponible del mismo equipo
-                    # 3) si aún queda hueco, se necesita MET.
+                    # Cobertura CHASIS 1 usando la misma lógica del panel:
+                    # MET base -> POOL cubre primera ausencia MET -> LET segunda.
                     let_free_total = 0
                     pool_available_total = 0
                     met_surplus_total = 0
@@ -965,35 +1031,26 @@ if st.session_state.is_admin:
                         if tdf.empty:
                             continue
 
-                        nums_t = tdf["numero"].astype(str).str.strip()
-                        team_unavailable = set(nums_t[nums_t.isin(unavailable_nums)].tolist())
-                        incidencias_team = len(team_unavailable)
-
-                        let_available = int(
-                            ((tdf["funcion"] == "LET") &
-                             ~nums_t.isin(team_unavailable)).sum()
-                        )
-                        pool_available = int(
-                            ((tdf["funcion"] == "POOL") &
-                             ~nums_t.isin(team_unavailable)).sum()
-                        )
-
-                        pool_cubre = min(pool_available, incidencias_team)
-                        restante = max(incidencias_team - pool_cubre, 0)
-                        let_cubre = min(let_available, restante)
-
-                        let_free_total += max(let_available - let_cubre, 0)
-                        pool_available_total += max(pool_available - pool_cubre, 0)
-
-                        # MET libre solo representa excedentes reales sobre el
-                        # requerimiento; no interviene en la cobertura por incidencias.
                         req_t = req_map.get(key_team, {"let":0, "met":0})
-                        req_m = int(req_t.get("met",0))
-                        met_available = int(
-                            ((tdf["funcion"] == "MET") &
-                             ~nums_t.isin(team_unavailable)).sum()
+                        req_m = int(req_t.get("met", 0))
+
+                        cov = calcular_cobertura_equipo(
+                            tdf,
+                            unavailable_nums,
+                            req_met=req_m
                         )
-                        met_surplus_total += max(met_available - req_m, 0)
+
+                        let_free_total += cov["let_libre"]
+                        pool_available_total += cov["pool_libre"]
+
+                        # Solo mostramos como MET libres a MET reales por encima
+                        # del requerimiento, si existieran.
+                        nums_t = tdf["numero"].astype(str).str.strip()
+                        met_disponibles = int(
+                            ((tdf["funcion"] == "MET") &
+                             ~nums_t.isin(unavailable_nums)).sum()
+                        )
+                        met_surplus_total += max(met_disponibles - req_m, 0)
 
                     if label == "LET libres":
                         value = let_free_total
@@ -1229,9 +1286,9 @@ if st.session_state.is_admin:
         st.markdown("---")
         st.markdown("### 🎯 Control operativo del día")
         st.caption(
-            "Lógica: cada equipo parte cubierto. Las incidencias generan huecos; "
-            "primero los cubre POOL del mismo equipo, después LET del mismo equipo. "
-            "Si todavía quedan huecos, se muestran como MET necesarios."
+            "CHASIS 1 · Los MET cubren las estaciones. POOL y LET son personal extra: "
+            "ante una ausencia MET, primero cubre POOL; ante una segunda ausencia MET, cubre LET. "
+            "Solo si faltan más MET se marca una necesidad."
         )
 
         dia_res = st.selectbox(
@@ -1279,49 +1336,26 @@ if st.session_state.is_admin:
             nums_team = team_staff["numero"].astype(str).str.strip()
             team_unavailable = set(nums_team[nums_team.isin(unavailable)].tolist())
 
-            # La cantidad de huecos la define la cantidad de incidencias no disponibles.
-            incidencias_team = len(team_unavailable)
-
-            # POOL y LET sí deben estar presentes para poder cubrir.
-            pool_available = int(
-                ((team_staff["funcion"] == "POOL") &
-                 ~nums_team.isin(team_unavailable)).sum()
-            )
-            let_available = int(
-                ((team_staff["funcion"] == "LET") &
-                 ~nums_team.isin(team_unavailable)).sum()
-            )
-
-            # Excel solicitado:
-            # 1ª cobertura = POOL, 2ª cobertura = LET, después faltan MET.
-            pool_cubre = min(pool_available, incidencias_team)
-            huecos_restantes = max(incidencias_team - pool_cubre, 0)
-
-            let_cubre = min(let_available, huecos_restantes)
-            huecos_restantes = max(huecos_restantes - let_cubre, 0)
-
-            let_libre = max(let_available - let_cubre, 0)
-            pool_libre = max(pool_available - pool_cubre, 0)
-            lets_libres_total += let_libre
-
             req = req_map.get(team.lower(), {"let":0, "met":0})
-            req_met = int(req.get("met",0))
+            req_met = int(req.get("met", 0))
 
-            if req_met <= 0:
-                estado = "⚪ SIN REQUERIMIENTO"
-            elif huecos_restantes > 0:
-                estado = f"🔴 NECESITA {huecos_restantes} MET"
-            else:
-                estado = "🟢 CUBIERTO"
+            cov = calcular_cobertura_equipo(
+                team_staff,
+                unavailable,
+                req_met=req_met
+            )
+
+            lets_libres_total += cov["let_libre"]
 
             coverage_rows.append({
                 "Equipo": team,
-                "Incidencias": incidencias_team,
-                "POOL cubre": pool_cubre,
-                "LET cubre": let_cubre,
-                "LET libre": let_libre,
-                "POOL libre": pool_libre,
-                "Estado": estado,
+                "Incidencias": cov["incidencias"],
+                "Ausencias MET": cov["ausencias_met"],
+                "POOL cubre": cov["pool_cubre"],
+                "LET cubre": cov["let_cubre"],
+                "LET libre": cov["let_libre"],
+                "POOL libre": cov["pool_libre"],
+                "Estado": cov["estado"],
             })
 
         # Resumen exactamente orientado al día seleccionado.
@@ -1333,6 +1367,7 @@ if st.session_state.is_admin:
         otros_count = int((~codes_day.isin(known_codes)).sum()) if not codes_day.empty else 0
 
         resumen_dia = [
+            ("ÁREA", "CHASIS 1"),
             ("LETS LIBRES", f"{lets_libres_total} de {lets_requeridos_total}"),
             ("VACACIONES", int((codes_day == "VAC").sum())),
             ("FALTAS", int(codes_day.isin(["FI","FJ"]).sum())),
@@ -1354,7 +1389,7 @@ if st.session_state.is_admin:
         col_res, col_cov = st.columns([0.72, 2.28], gap="large")
 
         with col_res:
-            st.markdown("#### 📋 Resumen del día")
+            st.markdown("#### 📋 Resumen del día — CHASIS 1")
             items_html = "".join(
                 f"<div style='display:flex;justify-content:space-between;gap:14px;"
                 f"padding:7px 10px;border-bottom:1px solid #26364f;'>"
@@ -1383,7 +1418,7 @@ if st.session_state.is_admin:
 
                 st.dataframe(
                     coverage_df[
-                        ["Equipo","Incidencias","POOL cubre","LET cubre","LET libre","POOL libre","Estado"]
+                        ["Equipo","Incidencias","Ausencias MET","POOL cubre","LET cubre","LET libre","POOL libre","Estado"]
                     ],
                     hide_index=True,
                     use_container_width=True,
